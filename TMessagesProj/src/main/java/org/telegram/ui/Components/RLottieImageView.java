@@ -34,6 +34,7 @@ public class RLottieImageView extends ImageView {
     private Integer layerNum;
     private boolean onlyLastFrame;
     public boolean cached;
+    private boolean reverse;
 
     public RLottieImageView(Context context) {
         super(context);
@@ -109,6 +110,14 @@ public class RLottieImageView extends ImageView {
         this.onlyLastFrame = onlyLastFrame;
     }
 
+    public void setReverse() {
+        if (drawable != null) {
+            drawable.setPlayInDirectionOfCustomEndFrame(true);
+            drawable.setCurrentFrame(drawable.getFramesCount());
+            drawable.setCustomEndFrame(0);
+        }
+    }
+
     public void setAnimation(TLRPC.Document document, int w, int h) {
         if (imageReceiver != null) {
             imageReceiver.onDetachedFromWindow();
@@ -126,6 +135,7 @@ public class RLottieImageView extends ImageView {
                 return super.setImageBitmapByKey(drawable, key, type, memCache, guid);
             }
         };
+        imageReceiver.setAllowLoadingOnAttachedOnly(true);
         if (onlyLastFrame) {
             imageReceiver.setImage(ImageLocation.getForDocument(document), w + "_" + h + "_lastframe", null, null, null, null, null, 0, null, document, 1);
         } else if ("video/webm".equals(document.mime_type)) {

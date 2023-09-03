@@ -7,6 +7,7 @@ import android.view.View;
 import org.telegram.messenger.AndroidUtilities;
 import org.telegram.messenger.ImageLocation;
 import org.telegram.messenger.ImageReceiver;
+import org.telegram.messenger.LiteMode;
 import org.telegram.messenger.MediaDataController;
 import org.telegram.messenger.MessageObject;
 import org.telegram.messenger.R;
@@ -43,7 +44,7 @@ public class AnimatedEmojiEffect {
         this.currentAccount = currentAccount;
         this.showGeneric = showGeneric;
         startTime = System.currentTimeMillis();
-        if (!longAnimation && showGeneric && !SharedConfig.getLiteMode().enabled()) {
+        if (!longAnimation && showGeneric && LiteMode.isEnabled(LiteMode.FLAG_ANIMATED_EMOJI_CHAT)) {
             effectImageReceiver = new ImageReceiver();
         }
     }
@@ -86,7 +87,8 @@ public class AnimatedEmojiEffect {
             effectImageReceiver.draw(canvas);
         }
 
-
+        canvas.save();
+        canvas.translate(bounds.left, bounds.top);
         for (int i = 0; i < particles.size(); i++) {
             particles.get(i).draw(canvas);
             if (particles.get(i).progress >= 1f) {
@@ -94,6 +96,7 @@ public class AnimatedEmojiEffect {
                 i--;
             }
         }
+        canvas.restore();
         if (parentView != null) {
             parentView.invalidate();
         }

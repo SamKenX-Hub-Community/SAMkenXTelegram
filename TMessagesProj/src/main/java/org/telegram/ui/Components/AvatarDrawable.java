@@ -20,6 +20,7 @@ import android.os.Build;
 import android.text.Layout;
 import android.text.StaticLayout;
 import android.text.TextPaint;
+import android.text.TextUtils;
 
 import androidx.core.graphics.ColorUtils;
 
@@ -75,9 +76,11 @@ public class AvatarDrawable extends Drawable {
     public static final int AVATAR_TYPE_FILTER_ARCHIVED = 11;
     public static final int AVATAR_TYPE_REGISTER = 13;
     public static final int AVATAR_TYPE_OTHER_CHATS = 14;
+    public static final int AVATAR_TYPE_CLOSE_FRIENDS = 15;
 
     private int alpha = 255;
     private Theme.ResourcesProvider resourcesProvider;
+    private boolean invalidateTextLayout;
 
     public AvatarDrawable() {
         this((Theme.ResourcesProvider) null);
@@ -151,7 +154,7 @@ public class AvatarDrawable extends Drawable {
         return Theme.getColor(Theme.key_avatar_backgroundActionBarBlue, resourcesProvider);
     }
 
-    public static String getNameColorNameForId(long id) {
+    public static int getNameColorNameForId(long id) {
         return Theme.keys_avatar_nameInMessage[getColorIndex(id)];
     }
 
@@ -276,7 +279,7 @@ public class AvatarDrawable extends Drawable {
         return needApplyColorAccent ? Theme.changeColorAccent(color2) : color2;
     }
 
-    private String takeFirstCharacter(String text) {
+    private static String takeFirstCharacter(String text) {
         ArrayList<Emoji.EmojiSpanRange> ranges = Emoji.parseEmojis(text);
         if (ranges != null && !ranges.isEmpty() && ranges.get(0).start == 0) {
             return text.substring(0, ranges.get(0).end);
@@ -286,6 +289,7 @@ public class AvatarDrawable extends Drawable {
 
     public void setInfo(long id, String firstName, String lastName, String custom) {
         hasGradient = true;
+        invalidateTextLayout = true;
         color = getThemedColor(Theme.keys_avatar_background[getColorIndex(id)]);
         color2 = getThemedColor(Theme.keys_avatar_background2[getColorIndex(id)]);
         needApplyColorAccent = id == 5; // Tinting manually set blue color
@@ -298,12 +302,16 @@ public class AvatarDrawable extends Drawable {
             lastName = null;
         }
 
-        stringBuilder.setLength(0);
+        getAvatarSymbols(firstName, lastName, custom, stringBuilder);
+    }
+
+    public static void getAvatarSymbols(String firstName, String lastName, String custom, StringBuilder result) {
+        result.setLength(0);
         if (custom != null) {
-            stringBuilder.append(custom);
+            result.append(custom);
         } else {
             if (firstName != null && firstName.length() > 0) {
-                stringBuilder.append(takeFirstCharacter(firstName));
+                result.append(takeFirstCharacter(firstName));
             }
             if (lastName != null && lastName.length() > 0) {
                 String lastNameLastWord = lastName;
@@ -312,40 +320,23 @@ public class AvatarDrawable extends Drawable {
                     lastNameLastWord = lastNameLastWord.substring(index + 1);
                 }
                 if (Build.VERSION.SDK_INT > 17) {
-                    stringBuilder.append("\u200C");
+                    result.append("\u200C");
                 }
-                stringBuilder.append(takeFirstCharacter(lastNameLastWord));
+                result.append(takeFirstCharacter(lastNameLastWord));
             } else if (firstName != null && firstName.length() > 0) {
                 for (int a = firstName.length() - 1; a >= 0; a--) {
                     if (firstName.charAt(a) == ' ') {
                         if (a != firstName.length() - 1 && firstName.charAt(a + 1) != ' ') {
-                            int index = stringBuilder.length();
+                            int index = result.length();
                             if (Build.VERSION.SDK_INT > 17) {
-                                stringBuilder.append("\u200C");
+                                result.append("\u200C");
                             }
-                            stringBuilder.append(takeFirstCharacter(firstName.substring(index)));
+                            result.append(takeFirstCharacter(firstName.substring(index)));
                             break;
                         }
                     }
                 }
             }
-        }
-
-        if (stringBuilder.length() > 0) {
-            CharSequence text = stringBuilder.toString().toUpperCase();
-            text = Emoji.replaceEmoji(text, namePaint.getFontMetricsInt(), AndroidUtilities.dp(16), true);
-            try {
-                textLayout = new StaticLayout(text, namePaint, AndroidUtilities.dp(100), Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, false);
-                if (textLayout.getLineCount() > 0) {
-                    textLeft = textLayout.getLineLeft(0);
-                    textWidth = textLayout.getLineWidth(0);
-                    textHeight = textLayout.getLineBottom(0);
-                }
-            } catch (Exception e) {
-                FileLog.e(e);
-            }
-        } else {
-            textLayout = null;
         }
     }
 
@@ -430,6 +421,8 @@ public class AvatarDrawable extends Drawable {
                 drawable = Theme.avatarDrawables[11];
             } else if (avatarType == AVATAR_TYPE_OTHER_CHATS) {
                 drawable = Theme.avatarDrawables[12];
+            } else if (avatarType == AVATAR_TYPE_CLOSE_FRIENDS) {
+                drawable = Theme.avatarDrawables[13];
             } else {
                 drawable = Theme.avatarDrawables[9];
             }
@@ -460,6 +453,27 @@ public class AvatarDrawable extends Drawable {
             Theme.avatarDrawables[1].setBounds(x, y, x + w, y + h);
             Theme.avatarDrawables[1].draw(canvas);
         } else {
+            if (invalidateTextLayout) {
+                invalidateTextLayout = false;
+                if (stringBuilder.length() > 0) {
+                    CharSequence text = stringBuilder.toString().toUpperCase();
+                    text = Emoji.replaceEmoji(text, namePaint.getFontMetricsInt(), AndroidUtilities.dp(16), true);
+                    if (textLayout == null || !TextUtils.equals(text, textLayout.getText())) {
+                        try {
+                            textLayout = new StaticLayout(text, namePaint, AndroidUtilities.dp(100), Layout.Alignment.ALIGN_NORMAL, 1.0f, 0.0f, false);
+                            if (textLayout.getLineCount() > 0) {
+                                textLeft = textLayout.getLineLeft(0);
+                                textWidth = textLayout.getLineWidth(0);
+                                textHeight = textLayout.getLineBottom(0);
+                            }
+                        } catch (Exception e) {
+                            FileLog.e(e);
+                        }
+                    }
+                } else {
+                    textLayout = null;
+                }
+            }
             if (textLayout != null) {
                 float scale = size / (float) AndroidUtilities.dp(50);
                 canvas.scale(scale, scale, size / 2f, size / 2f) ;
@@ -496,9 +510,8 @@ public class AvatarDrawable extends Drawable {
         return 0;
     }
 
-    private int getThemedColor(String key) {
-        Integer color = resourcesProvider != null ? resourcesProvider.getColor(key) : null;
-        return color != null ? color : Theme.getColor(key);
+    private int getThemedColor(int key) {
+        return Theme.getColor(key, resourcesProvider);
     }
 
     public void setRoundRadius(int roundRadius) {

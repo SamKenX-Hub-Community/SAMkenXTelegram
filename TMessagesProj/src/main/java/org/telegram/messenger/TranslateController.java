@@ -38,7 +38,7 @@ public class TranslateController extends BaseController {
 
     private static final int MAX_SYMBOLS_PER_REQUEST = 25000;
     private static final int MAX_MESSAGES_PER_REQUEST = 20;
-    private static final int GROUPING_TRANSLATIONS_TIMEOUT = 200;
+    private static final int GROUPING_TRANSLATIONS_TIMEOUT = 80;
 
     private final Set<Long> translatingDialogs = new HashSet<>();
     private final Set<Long> translatableDialogs = new HashSet<>();
@@ -48,7 +48,7 @@ public class TranslateController extends BaseController {
     private final HashMap<Long, HashMap<Integer, MessageObject>> keptReplyMessageObjects = new HashMap<>();
     private final Set<Long> hideTranslateDialogs = new HashSet<>();
 
-    class TranslatableDecision {
+    static class TranslatableDecision {
         Set<Integer> certainlyTranslatable = new HashSet<>();
         Set<Integer> unknown = new HashSet<>();
         Set<Integer> certainlyNotTranslatable = new HashSet<>();
@@ -64,25 +64,39 @@ public class TranslateController extends BaseController {
     }
 
     public boolean isFeatureAvailable() {
-        return UserConfig.getInstance(currentAccount).isPremium() && isChatTranslateEnabled();
+        return isChatTranslateEnabled() && UserConfig.getInstance(currentAccount).isPremium();
     }
 
+    private Boolean chatTranslateEnabled;
+    private Boolean contextTranslateEnabled;
+
     public boolean isChatTranslateEnabled() {
-        return MessagesController.getMainSettings(currentAccount).getBoolean("translate_chat_button", true);
+        if (chatTranslateEnabled == null) {
+            chatTranslateEnabled = messagesController.getMainSettings().getBoolean("translate_chat_button", true);
+        }
+        return chatTranslateEnabled;
     }
 
     public boolean isContextTranslateEnabled() {
-        return MessagesController.getMainSettings(currentAccount).getBoolean("translate_button", MessagesController.getGlobalMainSettings().getBoolean("translate_button", false));
+        if (contextTranslateEnabled == null) {
+            contextTranslateEnabled = messagesController.getMainSettings().getBoolean("translate_button", MessagesController.getGlobalMainSettings().getBoolean("translate_button", false));
+        }
+        return contextTranslateEnabled;
     }
 
     public void setContextTranslateEnabled(boolean enable) {
-        MessagesController.getMainSettings(currentAccount).edit().putBoolean("translate_button", enable).apply();
+        messagesController.getMainSettings().edit().putBoolean("translate_button", contextTranslateEnabled = enable).apply();
+    }
+
+    public void setChatTranslateEnabled(boolean enable) {
+        messagesController.getMainSettings().edit().putBoolean("translate_chat_button", chatTranslateEnabled = enable).apply();
     }
 
     public static boolean isTranslatable(MessageObject messageObject) {
         return (
             messageObject != null && messageObject.messageOwner != null &&
             !messageObject.isOutOwner() &&
+            !messageObject.isRestrictedMessage &&
             (
                 messageObject.type == MessageObject.TYPE_TEXT ||
                 messageObject.type == MessageObject.TYPE_VIDEO ||
@@ -275,12 +289,15 @@ public class TranslateController extends BaseController {
     );
 
     private static List<String> allLanguages = Arrays.asList(
-        "af", "sq", "am", "ar", "hy", "az", "eu", "be", "bn", "bs", "bg", "ca", "ceb", "zh", "co", "hr", "cs", "da", "nl", "en", "eo", "et", "fi", "fr", "fy", "gl", "ka", "de", "el", "gu", "ht", "ha", "haw", "he", "iw", "hi", "hmn", "hu", "is", "ig", "id", "ga", "it", "ja", "jv", "kn", "kk", "km", "rw", "ko", "ku", "ky", "lo", "la", "lv", "lt", "lb", "mk", "mg", "ms", "ml", "mt", "mi", "mr", "mn", "my", "ne", "no", "ny", "or", "ps", "fa", "pl", "pt", "pa", "ro", "ru", "sm", "gd", "sr", "st", "sn", "sd", "si", "sk", "sl", "so", "es", "su", "sw", "sv", "tl", "tg", "ta", "tt", "te", "th", "tr", "tk", "uk", "ur", "ug", "uz", "vi", "cy", "xh", "yi", "yo", "zu"
+        "af", "sq", "am", "ar", "hy", "az", "eu", "be", "bn", "bs", "bg", "ca", "ceb", "zh-cn", "zh", "zh-tw", "co", "hr", "cs", "da", "nl", "en", "eo", "et", "fi", "fr", "fy", "gl", "ka", "de", "el", "gu", "ht", "ha", "haw", "he", "iw", "hi", "hmn", "hu", "is", "ig", "id", "ga", "it", "ja", "jv", "kn", "kk", "km", "rw", "ko", "ku", "ky", "lo", "la", "lv", "lt", "lb", "mk", "mg", "ms", "ml", "mt", "mi", "mr", "mn", "my", "ne", "no", "ny", "or", "ps", "fa", "pl", "pt", "pa", "ro", "ru", "sm", "gd", "sr", "st", "sn", "sd", "si", "sk", "sl", "so", "es", "su", "sw", "sv", "tl", "tg", "ta", "tt", "te", "th", "tr", "tk", "uk", "ur", "ug", "uz", "vi", "cy", "xh", "yi", "yo", "zu"
     );
 
     public static class Language {
         public String code;
         public String displayName;
+        public String ownDisplayName;
+
+        public String q;
     }
 
     public static ArrayList<Language> getLanguages() {
@@ -288,10 +305,15 @@ public class TranslateController extends BaseController {
         for (int i = 0; i < allLanguages.size(); ++i) {
             Language language = new Language();
             language.code = allLanguages.get(i);
+            if ("no".equals(language.code)) {
+                language.code = "nb";
+            }
             language.displayName = TranslateAlert2.capitalFirst(TranslateAlert2.languageName(language.code));
+            language.ownDisplayName = TranslateAlert2.capitalFirst(TranslateAlert2.systemLanguageName(language.code, true));
             if (language.displayName == null) {
                 continue;
             }
+            language.q = (language.displayName + " " + (language.ownDisplayName == null ? "" : language.ownDisplayName)).toLowerCase();
             result.add(language);
         }
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
@@ -363,10 +385,15 @@ public class TranslateController extends BaseController {
             }
             Language language = new Language();
             language.code = code;
+            if ("no".equals(language.code)) {
+                language.code = "nb";
+            }
             language.displayName = TranslateAlert2.capitalFirst(TranslateAlert2.languageName(language.code));
+            language.ownDisplayName = TranslateAlert2.capitalFirst(TranslateAlert2.systemLanguageName(language.code, true));
             if (language.displayName == null) {
                 continue;
             }
+            language.q = (language.displayName + " " + language.ownDisplayName).toLowerCase();
             result.add(language);
         }
         return result;
@@ -528,8 +555,14 @@ public class TranslateController extends BaseController {
         });
     }
 
-    public void checkDialogMessages(long dialogId) {
-        if (!isFeatureAvailable()) {
+    public void checkDialogMessage(long dialogId) {
+        if (isFeatureAvailable()) {
+            checkDialogMessageSure(dialogId);
+        }
+    }
+
+    public void checkDialogMessageSure(long dialogId) {
+        if (!translatingDialogs.contains(dialogId)) {
             return;
         }
         getMessagesStorage().getStorageQueue().postRunnable(() -> {
@@ -606,20 +639,22 @@ public class TranslateController extends BaseController {
 
         pendingLanguageChecks.add(hash);
 
-        LanguageDetector.detectLanguage(messageObject.messageOwner.message, lng -> AndroidUtilities.runOnUIThread(() -> {
-            String detectedLanguage = lng;
-            if (detectedLanguage == null) {
-                detectedLanguage = UNKNOWN_LANGUAGE;
-            }
-            messageObject.messageOwner.originalLanguage = detectedLanguage;
-            getMessagesStorage().updateMessageCustomParams(dialogId, messageObject.messageOwner);
-            pendingLanguageChecks.remove((Integer) hash);
-            checkDialogTranslatable(messageObject);
-        }), err -> AndroidUtilities.runOnUIThread(() -> {
-            messageObject.messageOwner.originalLanguage = UNKNOWN_LANGUAGE;
-            getMessagesStorage().updateMessageCustomParams(dialogId, messageObject.messageOwner);
-            pendingLanguageChecks.remove((Integer) hash);
-        }));
+        Utilities.stageQueue.postRunnable(() -> {
+            LanguageDetector.detectLanguage(messageObject.messageOwner.message, lng -> AndroidUtilities.runOnUIThread(() -> {
+                String detectedLanguage = lng;
+                if (detectedLanguage == null) {
+                    detectedLanguage = UNKNOWN_LANGUAGE;
+                }
+                messageObject.messageOwner.originalLanguage = detectedLanguage;
+                getMessagesStorage().updateMessageCustomParams(dialogId, messageObject.messageOwner);
+                pendingLanguageChecks.remove((Integer) hash);
+                checkDialogTranslatable(messageObject);
+            }), err -> AndroidUtilities.runOnUIThread(() -> {
+                messageObject.messageOwner.originalLanguage = UNKNOWN_LANGUAGE;
+                getMessagesStorage().updateMessageCustomParams(dialogId, messageObject.messageOwner);
+                pendingLanguageChecks.remove((Integer) hash);
+            }));
+        });
     }
 
     private void checkDialogTranslatable(MessageObject messageObject) {
@@ -641,8 +676,8 @@ public class TranslateController extends BaseController {
             isTranslatable(messageObject) &&
             messageObject.messageOwner.originalLanguage != null &&
             !UNKNOWN_LANGUAGE.equals(messageObject.messageOwner.originalLanguage) &&
-            !RestrictedLanguagesSelectActivity.getRestrictedLanguages().contains(messageObject.messageOwner.originalLanguage) &&
-            !TextUtils.equals(getDialogTranslateTo(dialogId), messageObject.messageOwner.originalLanguage)
+            !RestrictedLanguagesSelectActivity.getRestrictedLanguages().contains(messageObject.messageOwner.originalLanguage)
+//            !TextUtils.equals(getDialogTranslateTo(dialogId), messageObject.messageOwner.originalLanguage)
         );
 
         if (isUnknown) {
@@ -682,6 +717,7 @@ public class TranslateController extends BaseController {
         ArrayList<Utilities.Callback2<TLRPC.TL_textWithEntities, String>> callbacks = new ArrayList<>();
         String language;
 
+        int delay = GROUPING_TRANSLATIONS_TIMEOUT;
         int symbolsCount;
 
         int reqId = -1;
@@ -726,6 +762,8 @@ public class TranslateController extends BaseController {
 
             if (pendingTranslation.symbolsCount + messageSymbolsCount >= MAX_SYMBOLS_PER_REQUEST ||
                 pendingTranslation.messageIds.size() + 1 >= MAX_MESSAGES_PER_REQUEST) {
+                AndroidUtilities.cancelRunOnUIThread(pendingTranslation.runnable);
+                AndroidUtilities.runOnUIThread(pendingTranslation.runnable); // without timeout
                 dialogPendingTranslations.add(pendingTranslation = new PendingTranslation());
             }
 
@@ -795,13 +833,14 @@ public class TranslateController extends BaseController {
                     pendingTranslation1.reqId = reqId;
                 }
             };
-            AndroidUtilities.runOnUIThread(pendingTranslation.runnable, GROUPING_TRANSLATIONS_TIMEOUT);
+            AndroidUtilities.runOnUIThread(pendingTranslation.runnable, pendingTranslation.delay);
+            pendingTranslation.delay /= 2;
         }
     }
 
     public boolean isTranslating(MessageObject messageObject) {
         synchronized (this) {
-            return messageObject != null && isTranslatingDialog(messageObject.getDialogId()) && loadingTranslations.contains(messageObject.getId());
+            return messageObject != null && loadingTranslations.contains(messageObject.getId()) && isTranslatingDialog(messageObject.getDialogId());
         }
     }
 
@@ -976,5 +1015,256 @@ public class TranslateController extends BaseController {
 
     private void resetTranslatingDialogsCache() {
         MessagesController.getMainSettings(currentAccount).edit().remove("translating_dialog_languages2").remove("hidden_translation_at").apply();
+    }
+
+    private final HashSet<StoryKey> detectingStories = new HashSet<>();
+    private final HashSet<StoryKey> translatingStories = new HashSet<>();
+
+    // ensure dialogId in storyItem is valid
+    public void detectStoryLanguage(TLRPC.StoryItem storyItem) {
+        if (storyItem == null || storyItem.detectedLng != null || storyItem.caption == null || storyItem.caption.length() == 0 || !LanguageDetector.hasSupport()) {
+            return;
+        }
+
+        final StoryKey key = new StoryKey(storyItem);
+        if (detectingStories.contains(key)) {
+            return;
+        }
+        detectingStories.add(key);
+
+        LanguageDetector.detectLanguage(storyItem.caption, lng -> AndroidUtilities.runOnUIThread(() -> {
+            storyItem.detectedLng = lng;
+            getMessagesController().getStoriesController().getStoriesStorage().putStoryInternal(storyItem.dialogId, storyItem);
+            detectingStories.remove(key);
+        }), err -> AndroidUtilities.runOnUIThread(() -> {
+            storyItem.detectedLng = UNKNOWN_LANGUAGE;
+            getMessagesController().getStoriesController().getStoriesStorage().putStoryInternal(storyItem.dialogId, storyItem);
+            detectingStories.remove(key);
+        }));
+    }
+
+    public boolean canTranslateStory(TLRPC.StoryItem storyItem) {
+        return storyItem != null && !TextUtils.isEmpty(storyItem.caption) && !Emoji.fullyConsistsOfEmojis(storyItem.caption) && (
+            storyItem.detectedLng == null && storyItem.translatedText != null && TextUtils.equals(storyItem.translatedLng, TranslateAlert2.getToLanguage()) ||
+            storyItem.detectedLng != null && !RestrictedLanguagesSelectActivity.getRestrictedLanguages().contains(storyItem.detectedLng)
+        );
+    }
+
+    public void translateStory(TLRPC.StoryItem storyItem, Runnable done) {
+        if (storyItem == null) {
+            return;
+        }
+
+        final StoryKey key = new StoryKey(storyItem);
+
+        String toLang = TranslateAlert2.getToLanguage();
+
+        if (storyItem.translatedText != null && TextUtils.equals(storyItem.translatedLng, toLang)) {
+            if (done != null) {
+                done.run();
+            }
+            return;
+        }
+        if (translatingStories.contains(key)) {
+            if (done != null) {
+                done.run();
+            }
+            return;
+        }
+
+        translatingStories.add(key);
+
+        TLRPC.TL_messages_translateText req = new TLRPC.TL_messages_translateText();
+        req.flags |= 2;
+        final TLRPC.TL_textWithEntities text = new TLRPC.TL_textWithEntities();
+        text.text = storyItem.caption;
+        text.entities = storyItem.entities;
+        req.text.add(text);
+        req.to_lang = toLang;
+        getConnectionsManager().sendRequest(req, (res, err) -> {
+            if (res instanceof TLRPC.TL_messages_translateResult) {
+                ArrayList<TLRPC.TL_textWithEntities> result = ((TLRPC.TL_messages_translateResult) res).result;
+                if (result.size() <= 0) {
+                    AndroidUtilities.runOnUIThread(() -> {
+                        storyItem.translatedLng = toLang;
+                        storyItem.translatedText = null;
+                        getMessagesController().getStoriesController().getStoriesStorage().putStoryInternal(storyItem.dialogId, storyItem);
+                        translatingStories.remove(key);
+                        if (done != null) {
+                            done.run();
+                        }
+                    });
+                    return;
+                }
+                final TLRPC.TL_textWithEntities textWithEntities = result.get(0);
+                AndroidUtilities.runOnUIThread(() -> {
+                    storyItem.translatedLng = toLang;
+                    storyItem.translatedText = TranslateAlert2.preprocess(text, textWithEntities);
+                    getMessagesController().getStoriesController().getStoriesStorage().putStoryInternal(storyItem.dialogId, storyItem);
+                    translatingStories.remove(key);
+                    if (done != null) {
+                        done.run();
+                    }
+                });
+            } else {
+                AndroidUtilities.runOnUIThread(() -> {
+                    storyItem.translatedLng = toLang;
+                    storyItem.translatedText = null;
+                    getMessagesController().getStoriesController().getStoriesStorage().putStoryInternal(storyItem.dialogId, storyItem);
+                    translatingStories.remove(key);
+                    if (done != null) {
+                        done.run();
+                    }
+                });
+            }
+        });
+    }
+
+    public boolean isTranslatingStory(TLRPC.StoryItem storyItem) {
+        if (storyItem == null) {
+            return false;
+        }
+        return translatingStories.contains(new StoryKey(storyItem));
+    }
+
+    private static class StoryKey {
+        public long dialogId;
+        public int storyId;
+
+        public StoryKey(TLRPC.StoryItem storyItem) {
+            dialogId = storyItem.dialogId;
+            storyId = storyItem.id;
+        }
+    }
+
+    private final HashSet<MessageKey> detectingPhotos = new HashSet<>();
+    private final HashSet<MessageKey> translatingPhotos = new HashSet<>();
+
+    public void detectPhotoLanguage(MessageObject messageObject, Utilities.Callback<String> done) {
+        if (messageObject == null || messageObject.messageOwner == null || !LanguageDetector.hasSupport() || TextUtils.isEmpty(messageObject.messageOwner.message)) {
+            return;
+        }
+        if (!TextUtils.isEmpty(messageObject.messageOwner.originalLanguage)) {
+            if (done != null) {
+                done.run(messageObject.messageOwner.originalLanguage);
+            }
+            return;
+        }
+
+        MessageKey key = new MessageKey(messageObject);
+        if (detectingPhotos.contains(key)) {
+            return;
+        }
+        detectingPhotos.add(key);
+
+        LanguageDetector.detectLanguage(messageObject.messageOwner.message, lng -> AndroidUtilities.runOnUIThread(() -> {
+            messageObject.messageOwner.originalLanguage = lng;
+            getMessagesStorage().updateMessageCustomParams(key.dialogId, messageObject.messageOwner);
+            detectingPhotos.remove(key);
+            if (done != null) {
+                done.run(lng);
+            }
+        }), err -> AndroidUtilities.runOnUIThread(() -> {
+            messageObject.messageOwner.originalLanguage = UNKNOWN_LANGUAGE;
+            getMessagesStorage().updateMessageCustomParams(key.dialogId, messageObject.messageOwner);
+            detectingPhotos.remove(key);
+            if (done != null) {
+                done.run(UNKNOWN_LANGUAGE);
+            }
+        }));
+    }
+
+    public boolean canTranslatePhoto(MessageObject messageObject, String detectedLanguage) {
+        if (messageObject != null && messageObject.messageOwner != null && messageObject.messageOwner.originalLanguage != null) {
+            detectedLanguage = messageObject.messageOwner.originalLanguage;
+        }
+        return messageObject != null && messageObject.messageOwner != null && !TextUtils.isEmpty(messageObject.messageOwner.message) && (
+            detectedLanguage == null && messageObject.messageOwner.translatedText != null && TextUtils.equals(messageObject.messageOwner.translatedToLanguage, TranslateAlert2.getToLanguage()) ||
+            detectedLanguage != null && !RestrictedLanguagesSelectActivity.getRestrictedLanguages().contains(messageObject.messageOwner.originalLanguage)
+        ) && !messageObject.translated;
+    }
+
+    public void translatePhoto(MessageObject messageObject, Runnable done) {
+        if (messageObject == null || messageObject.messageOwner == null) {
+            return;
+        }
+
+        final MessageKey key = new MessageKey(messageObject);
+
+        String toLang = TranslateAlert2.getToLanguage();
+
+        if (messageObject.messageOwner.translatedText != null && TextUtils.equals(messageObject.messageOwner.translatedToLanguage, toLang)) {
+            if (done != null) {
+                done.run();
+            }
+            return;
+        }
+        if (translatingPhotos.contains(key)) {
+            if (done != null) {
+                done.run();
+            }
+            return;
+        }
+
+        translatingPhotos.add(key);
+
+        TLRPC.TL_messages_translateText req = new TLRPC.TL_messages_translateText();
+        req.flags |= 2;
+        final TLRPC.TL_textWithEntities text = new TLRPC.TL_textWithEntities();
+        text.text = messageObject.messageOwner.message;
+        text.entities = messageObject.messageOwner.entities;
+        if (text.entities == null) {
+            text.entities = new ArrayList<>();
+        }
+        req.text.add(text);
+        req.to_lang = toLang;
+        final long start = System.currentTimeMillis();
+        getConnectionsManager().sendRequest(req, (res, err) -> {
+            if (res instanceof TLRPC.TL_messages_translateResult) {
+                ArrayList<TLRPC.TL_textWithEntities> result = ((TLRPC.TL_messages_translateResult) res).result;
+                if (result.size() <= 0) {
+                    AndroidUtilities.runOnUIThread(() -> {
+                        messageObject.messageOwner.translatedToLanguage = toLang;
+                        messageObject.messageOwner.translatedText = null;
+                        getMessagesStorage().updateMessageCustomParams(key.dialogId, messageObject.messageOwner);
+                        translatingPhotos.remove(key);
+                        if (done != null) {
+                            AndroidUtilities.runOnUIThread(done, Math.max(0, 400L - (System.currentTimeMillis() - start)));
+                        }
+                    });
+                    return;
+                }
+                final TLRPC.TL_textWithEntities textWithEntities = result.get(0);
+                AndroidUtilities.runOnUIThread(() -> {
+                    messageObject.messageOwner.translatedToLanguage = toLang;
+                    messageObject.messageOwner.translatedText = TranslateAlert2.preprocess(text, textWithEntities);
+                    getMessagesStorage().updateMessageCustomParams(key.dialogId, messageObject.messageOwner);
+                    translatingPhotos.remove(key);
+                    if (done != null) {
+                        AndroidUtilities.runOnUIThread(done, Math.max(0, 400L - (System.currentTimeMillis() - start)));
+                    }
+                });
+            } else {
+                AndroidUtilities.runOnUIThread(() -> {
+                    messageObject.messageOwner.translatedToLanguage = toLang;
+                    messageObject.messageOwner.translatedText = null;
+                    getMessagesStorage().updateMessageCustomParams(key.dialogId, messageObject.messageOwner);
+                    translatingPhotos.remove(key);
+                    if (done != null) {
+                        AndroidUtilities.runOnUIThread(done, Math.max(0, 400L - (System.currentTimeMillis() - start)));
+                    }
+                });
+            }
+        });
+    }
+
+    private static class MessageKey {
+        public long dialogId;
+        public int id;
+
+        public MessageKey(MessageObject msg) {
+            dialogId = msg.getDialogId();
+            id = msg.getId();
+        }
     }
 }

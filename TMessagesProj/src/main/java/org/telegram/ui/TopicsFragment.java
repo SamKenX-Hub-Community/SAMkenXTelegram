@@ -56,6 +56,7 @@ import com.google.android.exoplayer2.util.Log;
 
 import org.telegram.messenger.AccountInstance;
 import org.telegram.messenger.AndroidUtilities;
+import org.telegram.messenger.AnimationNotificationsLocker;
 import org.telegram.messenger.BuildVars;
 import org.telegram.messenger.ChatObject;
 import org.telegram.messenger.DialogObject;
@@ -251,8 +252,9 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
 
     private boolean updateAnimated;
 
-    private int transitionAnimationIndex;
-    private int transitionAnimationGlobalIndex;
+    private final AnimationNotificationsLocker notificationsLocker = new AnimationNotificationsLocker(new int[]{
+            NotificationCenter.topicsDidLoaded
+    });
     private View blurredView;
     private int selectedTopicForTablet;
 
@@ -284,6 +286,9 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
     }
 
     public static void prepareToSwitchAnimation(ChatActivity chatActivity) {
+        if (chatActivity.getParentLayout() == null) {
+            return;
+        }
         boolean needCreateTopicsFragment = false;
         if (chatActivity.getParentLayout().getFragmentStack().size() <= 1) {
             needCreateTopicsFragment = true;
@@ -466,10 +471,13 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
                     actionBarPaint.setColor(getThemedColor(Theme.key_windowBackgroundWhite));
                     actionBarPaint.setAlpha((int) (255 * searchAnimationProgress));
                     canvas.drawRect(0, 0, getWidth(), AndroidUtilities.statusBarHeight, actionBarPaint);
+                    canvas.drawLine(0, 0, 0, getHeight(), Theme.dividerPaint);
                 }
             }
 
         };
+
+        contentView.setBackgroundColor(Theme.getColor(Theme.key_windowBackgroundWhite));
         contentView.needBlur = !inPreviewMode;
 
         actionBar.setAddToContainer(false);
@@ -721,8 +729,8 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
         generalIconDrawable.setBounds(0, AndroidUtilities.dp(2), AndroidUtilities.dp(16), AndroidUtilities.dp(18));
         generalIcon.setSpan(new ImageSpan(generalIconDrawable, DynamicDrawableSpan.ALIGN_CENTER), 0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
         pullForegroundDrawable = new PullForegroundDrawable(
-                AndroidUtilities.replaceCharSequence("#", LocaleController.getString("AccSwipeForGeneral", R.string.AccSwipeForGeneral), generalIcon),
-                AndroidUtilities.replaceCharSequence("#", LocaleController.getString("AccReleaseForGeneral", R.string.AccReleaseForGeneral), generalIcon)
+            AndroidUtilities.replaceCharSequence("#", LocaleController.getString("AccSwipeForGeneral", R.string.AccSwipeForGeneral), generalIcon),
+            AndroidUtilities.replaceCharSequence("#", LocaleController.getString("AccReleaseForGeneral", R.string.AccReleaseForGeneral), generalIcon)
         ) {
             @Override
             protected float getViewOffset() {
@@ -1205,6 +1213,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
             getMessagesController().hidePeerSettingsBar(-chatId, null, getCurrentChat());
             updateChatInfo();
         });
+        closeReportSpam.setVisibility(View.GONE);
 
         updateChatInfo();
 
@@ -1757,7 +1766,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
         alertDialog.show();
         TextView button = (TextView) alertDialog.getButton(DialogInterface.BUTTON_POSITIVE);
         if (button != null) {
-            button.setTextColor(Theme.getColor(Theme.key_dialogTextRed2));
+            button.setTextColor(Theme.getColor(Theme.key_text_RedBold));
         }
     }
 
@@ -1888,8 +1897,8 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
         if (ChatObject.canDeleteTopic(currentAccount, getCurrentChat(), topic)) {
             ActionBarMenuSubItem deleteItem = new ActionBarMenuSubItem(getParentActivity(), false, true);
             deleteItem.setTextAndIcon(LocaleController.getPluralString("DeleteTopics", 1), R.drawable.msg_delete);
-            deleteItem.setIconColor(getThemedColor(Theme.key_dialogRedIcon));
-            deleteItem.setTextColor(getThemedColor(Theme.key_dialogTextRed));
+            deleteItem.setIconColor(getThemedColor(Theme.key_text_RedRegular));
+            deleteItem.setTextColor(getThemedColor(Theme.key_text_RedBold));
             deleteItem.setMinimumWidth(160);
             deleteItem.setOnClickListener(e -> {
                 HashSet<Integer> hashSet = new HashSet();
@@ -2445,7 +2454,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
     private void setButtonType(int bottomButtonType) {
         if (this.bottomButtonType != bottomButtonType) {
             this.bottomButtonType = bottomButtonType;
-            bottomOverlayChatText.setTextColorKey(bottomButtonType == BOTTOM_BUTTON_TYPE_JOIN ? Theme.key_chat_fieldOverlayText : Theme.key_chat_reportSpam);
+            bottomOverlayChatText.setTextColorKey(bottomButtonType == BOTTOM_BUTTON_TYPE_JOIN ? Theme.key_chat_fieldOverlayText : Theme.key_text_RedBold);
             closeReportSpam.setVisibility(bottomButtonType == BOTTOM_BUTTON_TYPE_REPORT ? View.VISIBLE : View.GONE);
             updateChatInfo();
         }
@@ -2508,8 +2517,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
 
     @Override
     public void onFragmentDestroy() {
-        getNotificationCenter().onAnimationFinish(transitionAnimationIndex);
-        NotificationCenter.getGlobalInstance().onAnimationFinish(transitionAnimationGlobalIndex);
+        notificationsLocker.unlock();
 
         NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.chatInfoDidLoad);
         NotificationCenter.getInstance(currentAccount).removeObserver(this, NotificationCenter.topicsDidLoaded);
@@ -2965,7 +2973,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
             } else if (topic != null && topic.icon_emoji_id != 0) {
                 setForumIcon(null);
                 if (animatedEmojiDrawable == null || animatedEmojiDrawable.getDocumentId() != topic.icon_emoji_id) {
-                    setAnimatedEmojiDrawable(new AnimatedEmojiDrawable(AnimatedEmojiDrawable.CACHE_TYPE_FORUM_TOPIC, currentAccount, topic.icon_emoji_id));
+                    setAnimatedEmojiDrawable(new AnimatedEmojiDrawable(openedForForward ? AnimatedEmojiDrawable.CACHE_TYPE_ALERT_PREVIEW_STATIC : AnimatedEmojiDrawable.CACHE_TYPE_FORUM_TOPIC, currentAccount, topic.icon_emoji_id));
                 }
             } else {
                 setAnimatedEmojiDrawable(null);
@@ -3310,7 +3318,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
                 } else if (items.get(position).type == DOWNLOADS_TYPE) {
                     return LocaleController.getString("DownloadsTabs", R.string.DownloadsTabs);
                 } else {
-                    return FiltersView.filters[items.get(position).filterIndex].title;
+                    return FiltersView.filters[items.get(position).filterIndex].getTitle();
                 }
             }
 
@@ -3757,8 +3765,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
     public void onTransitionAnimationStart(boolean isOpen, boolean backward) {
         super.onTransitionAnimationStart(isOpen, backward);
 
-        transitionAnimationIndex = getNotificationCenter().setAnimationInProgress(transitionAnimationIndex, new int[]{NotificationCenter.topicsDidLoaded});
-        transitionAnimationGlobalIndex = NotificationCenter.getGlobalInstance().setAnimationInProgress(transitionAnimationGlobalIndex, new int[0]);
+        notificationsLocker.lock();
     }
 
     @Override
@@ -3771,8 +3778,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
             blurredView.setBackground(null);
         }
 
-        getNotificationCenter().onAnimationFinish(transitionAnimationIndex);
-        NotificationCenter.getGlobalInstance().onAnimationFinish(transitionAnimationGlobalIndex);
+        notificationsLocker.unlock();
 
         if (!isOpen && (opnendForSelect && removeFragmentOnTransitionEnd)) {
             removeSelfFromStack();
@@ -3806,7 +3812,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
     }
 
     private void prepareBlurBitmap() {
-        if (blurredView == null || parentLayout == null || SharedConfig.useLNavigation) {
+        if (blurredView == null || parentLayout == null) {
             return;
         }
         int w = (int) (fragmentView.getMeasuredWidth() / 6.0f);
@@ -3938,6 +3944,7 @@ public class TopicsFragment extends BaseFragment implements NotificationCenter.N
 
         ArrayList<ThemeDescription> arrayList = new ArrayList<>();
 
+        arrayList.add(new ThemeDescription(fragmentView, ThemeDescription.FLAG_BACKGROUND, null, null, null, null, Theme.key_windowBackgroundWhite));
         arrayList.add(new ThemeDescription(null, 0, null, null, null, cellDelegate, Theme.key_windowBackgroundWhite));
         arrayList.add(new ThemeDescription(actionBar, ThemeDescription.FLAG_BACKGROUND, null, null, null, null, Theme.key_actionBarDefault));
         arrayList.add(new ThemeDescription(actionBar, ThemeDescription.FLAG_AB_ITEMSCOLOR, null, null, null, null, Theme.key_actionBarDefaultIcon));

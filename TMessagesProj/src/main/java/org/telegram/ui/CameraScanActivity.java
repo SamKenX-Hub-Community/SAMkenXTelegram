@@ -473,7 +473,7 @@ public class CameraScanActivity extends BaseFragment {
             actionBar.setTitleColor(0xffffffff);
             actionBar.setItemsColor(0xffffffff, false);
             actionBar.setItemsBackgroundColor(0x22ffffff, false);
-            viewGroup.setBackgroundColor(Theme.getColor(Theme.key_wallet_blackBackground));
+            viewGroup.setBackgroundColor(0xFF000000);
             viewGroup.addView(actionBar);
         }
 
@@ -648,9 +648,15 @@ public class CameraScanActivity extends BaseFragment {
                     if (getParentActivity() == null) {
                         return;
                     }
-                    if (Build.VERSION.SDK_INT >= 23) {
-                        if (getParentActivity().checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
-                            getParentActivity().requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, BasePermissionsActivity.REQUEST_CODE_EXTERNAL_STORAGE);
+                    final Activity activity = getParentActivity();
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        if (activity.checkSelfPermission(Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) {
+                            activity.requestPermissions(new String[]{Manifest.permission.READ_MEDIA_IMAGES, Manifest.permission.READ_MEDIA_VIDEO}, BasePermissionsActivity.REQUEST_CODE_EXTERNAL_STORAGE);
+                            return;
+                        }
+                    } else if (Build.VERSION.SDK_INT >= 23) {
+                        if (activity.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                            activity.requestPermissions(new String[]{Manifest.permission.READ_EXTERNAL_STORAGE}, BasePermissionsActivity.REQUEST_CODE_EXTERNAL_STORAGE);
                             return;
                         }
                     }

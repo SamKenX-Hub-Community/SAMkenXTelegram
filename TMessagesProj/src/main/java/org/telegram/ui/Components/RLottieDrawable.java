@@ -24,6 +24,7 @@ import android.text.TextUtils;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
 
+import com.google.android.exoplayer2.util.Log;
 import com.google.gson.Gson;
 
 import org.telegram.messenger.AndroidUtilities;
@@ -51,6 +52,8 @@ public class RLottieDrawable extends BitmapDrawable implements Animatable, Bitma
     public boolean skipFrameUpdate;
 
     public static native long create(String src, String json, int w, int h, int[] params, boolean precache, int[] colorReplacement, boolean limitFps, int fitzModifier);
+
+    public static native long getFramesCount(String src, String json);
 
     protected static native long createWithJson(String json, String name, int[] params, int[] colorReplacement);
 
@@ -247,7 +250,9 @@ public class RLottieDrawable extends BitmapDrawable implements Animatable, Bitma
         if (!hasParentView()) {
             stop();
         }
-        scheduleNextGetFrame();
+        if (isRunning) {
+            scheduleNextGetFrame();
+        }
     }
 
     private void recycleNativePtr(boolean uiThread) {
@@ -292,7 +297,6 @@ public class RLottieDrawable extends BitmapDrawable implements Animatable, Bitma
         if (onAnimationEndListener != null) {
             onAnimationEndListener = null;
         }
-        invalidateInternal();
     }
 
     public void setOnFinishCallback(Runnable callback, int frame) {
@@ -492,18 +496,22 @@ public class RLottieDrawable extends BitmapDrawable implements Animatable, Bitma
             if (createdForFirstFrame) {
                 return;
             }
-            bitmapsCache = new BitmapsCache(file, this, cacheOptions, w, h, !limitFps);
             parseLottieMetadata(file, null, metaData);
+            if (shouldLimitFps && metaData[1] < 60) {
+                shouldLimitFps = false;
+            }
+            bitmapsCache = new BitmapsCache(file, this, cacheOptions, w, h, !limitFps);
         } else {
             nativePtr = create(file.getAbsolutePath(), null, w, h, metaData, precache, colorReplacement, shouldLimitFps, fitzModifier);
             if (nativePtr == 0) {
+                FileLog.d("RLottieDrawable nativePtr == 0 " + file.getAbsolutePath() + " remove file");
                 file.delete();
+            }
+            if (shouldLimitFps && metaData[1] < 60) {
+                shouldLimitFps = false;
             }
         }
 
-        if (shouldLimitFps && metaData[1] < 60) {
-            shouldLimitFps = false;
-        }
         timeBetweenFrames = Math.max(shouldLimitFps ? 33 : 16, (int) (1000.0f / metaData[1]));
     }
 
@@ -526,18 +534,23 @@ public class RLottieDrawable extends BitmapDrawable implements Animatable, Bitma
             if (createdForFirstFrame) {
                 return;
             }
-            bitmapsCache = new BitmapsCache(file, this, options, w, h, !limitFps);
             parseLottieMetadata(file, json, metaData);
+            if (shouldLimitFps && metaData[1] < 60) {
+                shouldLimitFps = false;
+            }
+            bitmapsCache = new BitmapsCache(file, this, options, w, h, !limitFps);
         } else {
             nativePtr = create(file.getAbsolutePath(), json, w, h, metaData, precache, colorReplacement, shouldLimitFps, fitzModifier);
             if (nativePtr == 0) {
+                FileLog.d("RLottieDrawable nativePtr == 0 " + file.getAbsolutePath() + " remove file");
                 file.delete();
+            }
+            if (shouldLimitFps && metaData[1] < 60) {
+                shouldLimitFps = false;
             }
         }
 
-        if (shouldLimitFps && metaData[1] < 60) {
-            shouldLimitFps = false;
-        }
+
         timeBetweenFrames = Math.max(shouldLimitFps ? 33 : 16, (int) (1000.0f / metaData[1]));
     }
 
@@ -558,10 +571,11 @@ public class RLottieDrawable extends BitmapDrawable implements Animatable, Bitma
             } else {
                 lottieMetadata = gson.fromJson(json, LottieMetadata.class);
             }
-            metaData[0] = (int) lottieMetadata.op;
+            metaData[0] = (int) (lottieMetadata.op - lottieMetadata.ip);
             metaData[1] = (int) lottieMetadata.fr;
         } catch (Exception e) {
-            FileLog.e(e);
+            // ignore app center, try handle by old method
+            FileLog.e(e, false);
             long nativePtr = create(file.getAbsolutePath(), json, width, height, metaData, false, args.colorReplacement, shouldLimitFps, args.fitzModifier);
             if (nativePtr != 0) {
                 destroy(nativePtr);
@@ -696,6 +710,10 @@ public class RLottieDrawable extends BitmapDrawable implements Animatable, Bitma
         }
     }
 
+    public void multiplySpeed(float multiplier) {
+        timeBetweenFrames *= (1f / multiplier);
+    }
+
     public static String readRes(File path, int rawRes) {
         int totalRead = 0;
         byte[] readBuffer = readBufferLocal.get();
@@ -812,7 +830,10 @@ public class RLottieDrawable extends BitmapDrawable implements Animatable, Bitma
     }
 
     protected void invalidateInternal() {
-        for (int i = 0; i < parentViews.size(); i++) {
+        if (isRecycled) {
+            return;
+        }
+        for (int i = 0, N = parentViews.size(); i < N; i++) {
             parentViews.get(i).invalidate();
         }
         if (masterParent != null) {
@@ -1415,8 +1436,7 @@ public class RLottieDrawable extends BitmapDrawable implements Animatable, Bitma
 
     private class LottieMetadata {
         float fr;
-        int w;
-        int h;
         float op;
+        float ip;
     }
 }

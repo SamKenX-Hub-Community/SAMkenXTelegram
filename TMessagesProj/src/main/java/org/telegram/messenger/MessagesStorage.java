@@ -15,7 +15,6 @@ import android.text.SpannableStringBuilder;
 import android.text.Spanned;
 import android.text.TextUtils;
 import android.text.style.ForegroundColorSpan;
-import android.util.Log;
 import android.util.Pair;
 import android.util.SparseArray;
 import android.util.SparseIntArray;
@@ -84,6 +83,7 @@ public class MessagesStorage extends BaseController {
     private int archiveUnreadCount;
     private volatile int pendingMainUnreadCount;
     private volatile int pendingArchiveUnreadCount;
+    private boolean databaseCreated;
 
     private CountDownLatch openSync = new CountDownLatch(1);
 
@@ -95,7 +95,7 @@ public class MessagesStorage extends BaseController {
         }
     }
 
-    private final static int LAST_DB_VERSION = 112;
+    public final static int LAST_DB_VERSION = 129;
     private boolean databaseMigrationInProgress;
     public boolean showClearDatabaseAlert;
     private LongSparseIntArray dialogIsForum = new LongSparseIntArray();
@@ -202,6 +202,7 @@ public class MessagesStorage extends BaseController {
     public MessagesStorage(int instance) {
         super(instance);
         storageQueue = new DispatchQueue("storageQueue_" + instance);
+        storageQueue.setPriority(8);
         storageQueue.postRunnable(() -> openDatabase(1));
     }
 
@@ -262,6 +263,20 @@ public class MessagesStorage extends BaseController {
     }
 
     public void openDatabase(int openTries) {
+        if (!NativeLoader.loaded()) {
+            int tryCount = 0;
+            while (!NativeLoader.loaded()) {
+                try {
+                    Thread.sleep(1000);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+                tryCount++;
+                if (tryCount > 5) {
+                    break;
+                }
+            }
+        }
         File filesDir = ApplicationLoader.getFilesDirFixed();
         if (currentAccount != 0) {
             filesDir = new File(filesDir, "account" + currentAccount + "/");
@@ -273,6 +288,7 @@ public class MessagesStorage extends BaseController {
 
         boolean createTable = false;
 
+        databaseCreated = false;
         if (!cacheFile.exists()) {
             createTable = true;
         }
@@ -287,172 +303,7 @@ public class MessagesStorage extends BaseController {
                 if (BuildVars.LOGS_ENABLED) {
                     FileLog.d("create new database");
                 }
-                database.executeFast("CREATE TABLE messages_holes(uid INTEGER, start INTEGER, end INTEGER, PRIMARY KEY(uid, start));").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_end_messages_holes ON messages_holes(uid, end);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE media_holes_v2(uid INTEGER, type INTEGER, start INTEGER, end INTEGER, PRIMARY KEY(uid, type, start));").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_end_media_holes_v2 ON media_holes_v2(uid, type, end);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE scheduled_messages_v2(mid INTEGER, uid INTEGER, send_state INTEGER, date INTEGER, data BLOB, ttl INTEGER, replydata BLOB, reply_to_message_id INTEGER, PRIMARY KEY(mid, uid))").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS send_state_idx_scheduled_messages_v2 ON scheduled_messages_v2(mid, send_state, date);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_date_idx_scheduled_messages_v2 ON scheduled_messages_v2(uid, date);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS reply_to_idx_scheduled_messages_v2 ON scheduled_messages_v2(mid, reply_to_message_id);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE messages_v2(mid INTEGER, uid INTEGER, read_state INTEGER, send_state INTEGER, date INTEGER, data BLOB, out INTEGER, ttl INTEGER, media INTEGER, replydata BLOB, imp INTEGER, mention INTEGER, forwards INTEGER, replies_data BLOB, thread_reply_id INTEGER, is_channel INTEGER, reply_to_message_id INTEGER, custom_params BLOB, group_id INTEGER, PRIMARY KEY(mid, uid))").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_mid_read_out_idx_messages_v2 ON messages_v2(uid, mid, read_state, out);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_date_mid_idx_messages_v2 ON messages_v2(uid, date, mid);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS mid_out_idx_messages_v2 ON messages_v2(mid, out);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS task_idx_messages_v2 ON messages_v2(uid, out, read_state, ttl, date, send_state);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS send_state_idx_messages_v2 ON messages_v2(mid, send_state, date);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_mention_idx_messages_v2 ON messages_v2(uid, mention, read_state);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS is_channel_idx_messages_v2 ON messages_v2(mid, is_channel);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS reply_to_idx_messages_v2 ON messages_v2(mid, reply_to_message_id);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_mid_groupid_messages_v2 ON messages_v2(uid, mid, group_id);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE download_queue(uid INTEGER, type INTEGER, date INTEGER, data BLOB, parent TEXT, PRIMARY KEY (uid, type));").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS type_date_idx_download_queue ON download_queue(type, date);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE user_contacts_v7(key TEXT PRIMARY KEY, uid INTEGER, fname TEXT, sname TEXT, imported INTEGER)").stepThis().dispose();
-                database.executeFast("CREATE TABLE user_phones_v7(key TEXT, phone TEXT, sphone TEXT, deleted INTEGER, PRIMARY KEY (key, phone))").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS sphone_deleted_idx_user_phones ON user_phones_v7(sphone, deleted);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE dialogs(did INTEGER PRIMARY KEY, date INTEGER, unread_count INTEGER, last_mid INTEGER, inbox_max INTEGER, outbox_max INTEGER, last_mid_i INTEGER, unread_count_i INTEGER, pts INTEGER, date_i INTEGER, pinned INTEGER, flags INTEGER, folder_id INTEGER, data BLOB, unread_reactions INTEGER, last_mid_group INTEGER, ttl_period INTEGER)").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS date_idx_dialogs ON dialogs(date);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS last_mid_idx_dialogs ON dialogs(last_mid);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS unread_count_idx_dialogs ON dialogs(unread_count);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS last_mid_i_idx_dialogs ON dialogs(last_mid_i);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS unread_count_i_idx_dialogs ON dialogs(unread_count_i);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS folder_id_idx_dialogs ON dialogs(folder_id);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS flags_idx_dialogs ON dialogs(flags);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE dialog_filter(id INTEGER PRIMARY KEY, ord INTEGER, unread_count INTEGER, flags INTEGER, title TEXT)").stepThis().dispose();
-                database.executeFast("CREATE TABLE dialog_filter_ep(id INTEGER, peer INTEGER, PRIMARY KEY (id, peer))").stepThis().dispose();
-                database.executeFast("CREATE TABLE dialog_filter_pin_v2(id INTEGER, peer INTEGER, pin INTEGER, PRIMARY KEY (id, peer))").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE randoms_v2(random_id INTEGER, mid INTEGER, uid INTEGER, PRIMARY KEY (random_id, mid, uid))").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS mid_idx_randoms_v2 ON randoms_v2(mid, uid);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE enc_tasks_v4(mid INTEGER, uid INTEGER, date INTEGER, media INTEGER, PRIMARY KEY(mid, uid, media))").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS date_idx_enc_tasks_v4 ON enc_tasks_v4(date);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE messages_seq(mid INTEGER PRIMARY KEY, seq_in INTEGER, seq_out INTEGER);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS seq_idx_messages_seq ON messages_seq(seq_in, seq_out);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE params(id INTEGER PRIMARY KEY, seq INTEGER, pts INTEGER, date INTEGER, qts INTEGER, lsv INTEGER, sg INTEGER, pbytes BLOB)").stepThis().dispose();
-                database.executeFast("INSERT INTO params VALUES(1, 0, 0, 0, 0, 0, 0, NULL)").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE media_v4(mid INTEGER, uid INTEGER, date INTEGER, type INTEGER, data BLOB, PRIMARY KEY(mid, uid, type))").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_mid_type_date_idx_media_v4 ON media_v4(uid, mid, type, date);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE bot_keyboard(uid INTEGER PRIMARY KEY, mid INTEGER, info BLOB)").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS bot_keyboard_idx_mid_v2 ON bot_keyboard(mid, uid);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE chat_settings_v2(uid INTEGER PRIMARY KEY, info BLOB, pinned INTEGER, online INTEGER, inviter INTEGER, links INTEGER)").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS chat_settings_pinned_idx ON chat_settings_v2(uid, pinned) WHERE pinned != 0;").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE user_settings(uid INTEGER PRIMARY KEY, info BLOB, pinned INTEGER)").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS user_settings_pinned_idx ON user_settings(uid, pinned) WHERE pinned != 0;").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE chat_pinned_v2(uid INTEGER, mid INTEGER, data BLOB, PRIMARY KEY (uid, mid));").stepThis().dispose();
-                database.executeFast("CREATE TABLE chat_pinned_count(uid INTEGER PRIMARY KEY, count INTEGER, end INTEGER);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE chat_hints(did INTEGER, type INTEGER, rating REAL, date INTEGER, PRIMARY KEY(did, type))").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS chat_hints_rating_idx ON chat_hints(rating);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE botcache(id TEXT PRIMARY KEY, date INTEGER, data BLOB)").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS botcache_date_idx ON botcache(date);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE users_data(uid INTEGER PRIMARY KEY, about TEXT)").stepThis().dispose();
-                database.executeFast("CREATE TABLE users(uid INTEGER PRIMARY KEY, name TEXT, status INTEGER, data BLOB)").stepThis().dispose();
-                database.executeFast("CREATE TABLE chats(uid INTEGER PRIMARY KEY, name TEXT, data BLOB)").stepThis().dispose();
-                database.executeFast("CREATE TABLE enc_chats(uid INTEGER PRIMARY KEY, user INTEGER, name TEXT, data BLOB, g BLOB, authkey BLOB, ttl INTEGER, layer INTEGER, seq_in INTEGER, seq_out INTEGER, use_count INTEGER, exchange_id INTEGER, key_date INTEGER, fprint INTEGER, fauthkey BLOB, khash BLOB, in_seq_no INTEGER, admin_id INTEGER, mtproto_seq INTEGER)").stepThis().dispose();
-                database.executeFast("CREATE TABLE channel_users_v2(did INTEGER, uid INTEGER, date INTEGER, data BLOB, PRIMARY KEY(did, uid))").stepThis().dispose();
-                database.executeFast("CREATE TABLE channel_admins_v3(did INTEGER, uid INTEGER, data BLOB, PRIMARY KEY(did, uid))").stepThis().dispose();
-                database.executeFast("CREATE TABLE contacts(uid INTEGER PRIMARY KEY, mutual INTEGER)").stepThis().dispose();
-                database.executeFast("CREATE TABLE user_photos(uid INTEGER, id INTEGER, data BLOB, PRIMARY KEY (uid, id))").stepThis().dispose();
-                database.executeFast("CREATE TABLE dialog_settings(did INTEGER PRIMARY KEY, flags INTEGER);").stepThis().dispose();
-                database.executeFast("CREATE TABLE web_recent_v3(id TEXT, type INTEGER, image_url TEXT, thumb_url TEXT, local_url TEXT, width INTEGER, height INTEGER, size INTEGER, date INTEGER, document BLOB, PRIMARY KEY (id, type));").stepThis().dispose();
-                database.executeFast("CREATE TABLE stickers_v2(id INTEGER PRIMARY KEY, data BLOB, date INTEGER, hash INTEGER);").stepThis().dispose();
-                database.executeFast("CREATE TABLE stickers_featured(id INTEGER PRIMARY KEY, data BLOB, unread BLOB, date INTEGER, hash INTEGER, premium INTEGER, emoji INTEGER);").stepThis().dispose();
-                database.executeFast("CREATE TABLE stickers_dice(emoji TEXT PRIMARY KEY, data BLOB, date INTEGER);").stepThis().dispose();
-                database.executeFast("CREATE TABLE stickersets(id INTEGER PRIMATE KEY, data BLOB, hash INTEGER);").stepThis().dispose();
-                database.executeFast("CREATE TABLE hashtag_recent_v2(id TEXT PRIMARY KEY, date INTEGER);").stepThis().dispose();
-                database.executeFast("CREATE TABLE webpage_pending_v2(id INTEGER, mid INTEGER, uid INTEGER, PRIMARY KEY (id, mid, uid));").stepThis().dispose();
-                database.executeFast("CREATE TABLE sent_files_v2(uid TEXT, type INTEGER, data BLOB, parent TEXT, PRIMARY KEY (uid, type))").stepThis().dispose();
-                database.executeFast("CREATE TABLE search_recent(did INTEGER PRIMARY KEY, date INTEGER);").stepThis().dispose();
-                database.executeFast("CREATE TABLE media_counts_v2(uid INTEGER, type INTEGER, count INTEGER, old INTEGER, PRIMARY KEY(uid, type))").stepThis().dispose();
-                database.executeFast("CREATE TABLE keyvalue(id TEXT PRIMARY KEY, value TEXT)").stepThis().dispose();
-                database.executeFast("CREATE TABLE bot_info_v2(uid INTEGER, dialogId INTEGER, info BLOB, PRIMARY KEY(uid, dialogId))").stepThis().dispose();
-                database.executeFast("CREATE TABLE pending_tasks(id INTEGER PRIMARY KEY, data BLOB);").stepThis().dispose();
-                database.executeFast("CREATE TABLE requested_holes(uid INTEGER, seq_out_start INTEGER, seq_out_end INTEGER, PRIMARY KEY (uid, seq_out_start, seq_out_end));").stepThis().dispose();
-                database.executeFast("CREATE TABLE sharing_locations(uid INTEGER PRIMARY KEY, mid INTEGER, date INTEGER, period INTEGER, message BLOB, proximity INTEGER);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE shortcut_widget(id INTEGER, did INTEGER, ord INTEGER, PRIMARY KEY (id, did));").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS shortcut_widget_did ON shortcut_widget(did);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE emoji_keywords_v2(lang TEXT, keyword TEXT, emoji TEXT, PRIMARY KEY(lang, keyword, emoji));").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS emoji_keywords_v2_keyword ON emoji_keywords_v2(keyword);").stepThis().dispose();
-                database.executeFast("CREATE TABLE emoji_keywords_info_v2(lang TEXT PRIMARY KEY, alias TEXT, version INTEGER, date INTEGER);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE wallpapers2(uid INTEGER PRIMARY KEY, data BLOB, num INTEGER)").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS wallpapers_num ON wallpapers2(num);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE unread_push_messages(uid INTEGER, mid INTEGER, random INTEGER, date INTEGER, data BLOB, fm TEXT, name TEXT, uname TEXT, flags INTEGER, PRIMARY KEY(uid, mid))").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS unread_push_messages_idx_date ON unread_push_messages(date);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS unread_push_messages_idx_random ON unread_push_messages(random);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE polls_v2(mid INTEGER, uid INTEGER, id INTEGER, PRIMARY KEY (mid, uid));").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS polls_id_v2 ON polls_v2(id);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE reactions(data BLOB, hash INTEGER, date INTEGER);").stepThis().dispose();
-                database.executeFast("CREATE TABLE reaction_mentions(message_id INTEGER, state INTEGER, dialog_id INTEGER, PRIMARY KEY(message_id, dialog_id))").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS reaction_mentions_did ON reaction_mentions(dialog_id);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE downloading_documents(data BLOB, hash INTEGER, id INTEGER, state INTEGER, date INTEGER, PRIMARY KEY(hash, id));").stepThis().dispose();
-                database.executeFast("CREATE TABLE animated_emoji(document_id INTEGER PRIMARY KEY, data BLOB);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE attach_menu_bots(data BLOB, hash INTEGER, date INTEGER);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE premium_promo(data BLOB, date INTEGER);").stepThis().dispose();
-                database.executeFast("CREATE TABLE emoji_statuses(data BLOB, type INTEGER);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE messages_holes_topics(uid INTEGER, topic_id INTEGER, start INTEGER, end INTEGER, PRIMARY KEY(uid, topic_id, start));").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_end_messages_holes ON messages_holes_topics(uid, topic_id, end);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE messages_topics(mid INTEGER, uid INTEGER, topic_id INTEGER, read_state INTEGER, send_state INTEGER, date INTEGER, data BLOB, out INTEGER, ttl INTEGER, media INTEGER, replydata BLOB, imp INTEGER, mention INTEGER, forwards INTEGER, replies_data BLOB, thread_reply_id INTEGER, is_channel INTEGER, reply_to_message_id INTEGER, custom_params BLOB, PRIMARY KEY(mid, topic_id, uid))").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_date_mid_idx_messages_topics ON messages_topics(uid, date, mid);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS mid_out_idx_messages_topics ON messages_topics(mid, out);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS task_idx_messages_topics ON messages_topics(uid, out, read_state, ttl, date, send_state);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS send_state_idx_messages_topics ON messages_topics(mid, send_state, date);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS is_channel_idx_messages_topics ON messages_topics(mid, is_channel);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS reply_to_idx_messages_topics ON messages_topics(mid, reply_to_message_id);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS mid_uid_messages_topics ON messages_topics(mid, uid);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_mid_read_out_idx_messages_topics ON messages_topics(uid, topic_id, mid, read_state, out);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_mention_idx_messages_topics ON messages_topics(uid, topic_id, mention, read_state);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_topic_id_messages_topics ON messages_topics(uid, topic_id);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_topic_id_date_mid_messages_topics ON messages_topics(uid, topic_id, date, mid);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_topic_id_mid_messages_topics ON messages_topics(uid, topic_id, mid);").stepThis().dispose();
-
-
-                database.executeFast("CREATE TABLE media_topics(mid INTEGER, uid INTEGER, topic_id INTEGER, date INTEGER, type INTEGER, data BLOB, PRIMARY KEY(mid, uid, topic_id, type))").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_mid_type_date_idx_media_topics ON media_topics(uid, topic_id, mid, type, date);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE media_holes_topics(uid INTEGER, topic_id INTEGER, type INTEGER, start INTEGER, end INTEGER, PRIMARY KEY(uid, topic_id, type, start));").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS uid_end_media_holes_topics ON media_holes_topics(uid, topic_id, type, end);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE topics(did INTEGER, topic_id INTEGER, data BLOB, top_message INTEGER, topic_message BLOB, unread_count INTEGER, max_read_id INTEGER, unread_mentions INTEGER, unread_reactions INTEGER, read_outbox INTEGER, pinned INTEGER, total_messages_count INTEGER, hidden INTEGER, PRIMARY KEY(did, topic_id));").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS did_top_message_topics ON topics(did, top_message);").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS did_topics ON topics(did);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE media_counts_topics(uid INTEGER, topic_id INTEGER, type INTEGER, count INTEGER, old INTEGER, PRIMARY KEY(uid, topic_id, type))").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE reaction_mentions_topics(message_id INTEGER, state INTEGER, dialog_id INTEGER, topic_id INTEGER, PRIMARY KEY(message_id, dialog_id, topic_id))").stepThis().dispose();
-                database.executeFast("CREATE INDEX IF NOT EXISTS reaction_mentions_topics_did ON reaction_mentions_topics(dialog_id, topic_id);").stepThis().dispose();
-
-                database.executeFast("CREATE TABLE emoji_groups(type INTEGER PRIMARY KEY, data BLOB)").stepThis().dispose();
-
-                //version
-                database.executeFast("PRAGMA user_version = " + LAST_DB_VERSION).stepThis().dispose();
+                createTables(database);
             } else {
                 int version = database.executeInt("PRAGMA user_version");
                 if (BuildVars.LOGS_ENABLED) {
@@ -504,23 +355,18 @@ public class MessagesStorage extends BaseController {
                     }
                 }
             }
+            databaseCreated = true;
         } catch (Exception e) {
             FileLog.e(e);
-//            if (BuildVars.DEBUG_PRIVATE_VERSION) {
-//                throw new RuntimeException(e);
-//            }
             if (openTries < 3 && e.getMessage() != null && e.getMessage().contains("malformed")) {
                 if (openTries == 2) {
                     cleanupInternal(true);
-                    for (int a = 0; a < 2; a++) {
-                        getUserConfig().setDialogsLoadOffset(a, 0, 0, 0, 0, 0, 0);
-                        getUserConfig().setTotalDialogsCount(a, 0);
-                    }
-                    getUserConfig().saveConfig(false);
+                    clearLoadingDialogsOffsets();
                 } else {
                     cleanupInternal(false);
                 }
                 openDatabase(openTries == 1 ? 2 : 3);
+                return;
             }
         }
 
@@ -544,6 +390,300 @@ public class MessagesStorage extends BaseController {
             showClearDatabaseAlert = false;//getDatabaseSize() > 150 * 1024 * 1024;
             NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.onDatabaseOpened);
         });
+    }
+
+    private void clearLoadingDialogsOffsets() {
+        for (int a = 0; a < 2; a++) {
+            getUserConfig().setDialogsLoadOffset(a, 0, 0, 0, 0, 0, 0);
+            getUserConfig().setTotalDialogsCount(a, 0);
+        }
+        getUserConfig().saveConfig(false);
+    }
+
+    private boolean recoverDatabase() {
+        database.close();
+        boolean restored = DatabaseMigrationHelper.recoverDatabase(cacheFile, walCacheFile, shmCacheFile, currentAccount);
+        FileLog.e("Database restored = " + restored);
+        if (restored) {
+            try {
+                database = new SQLiteDatabase(cacheFile.getPath());
+                database.executeFast("PRAGMA secure_delete = ON").stepThis().dispose();
+                database.executeFast("PRAGMA temp_store = MEMORY").stepThis().dispose();
+                database.executeFast("PRAGMA journal_mode = WAL").stepThis().dispose();
+                database.executeFast("PRAGMA journal_size_limit = 10485760").stepThis().dispose();
+            } catch (SQLiteException e) {
+                FileLog.e(new Exception(e));
+                restored = false;
+            }
+        }
+        if (!restored) {
+            cleanupInternal(true);
+            openDatabase(1);
+            restored = databaseCreated;
+            FileLog.e("Try create new database = " + restored);
+        }
+        if (restored) {
+            reset();
+        }
+        return restored;
+    }
+
+    public final static String[] DATABASE_TABLES = new String[] {
+            "messages_holes",
+            "media_holes_v2",
+            "scheduled_messages_v2",
+            "messages_v2",
+            "download_queue",
+            "user_contacts_v7",
+            "user_phones_v7",
+            "dialogs",
+            "dialog_filter",
+            "dialog_filter_ep",
+            "dialog_filter_pin_v2",
+            "randoms_v2",
+            "enc_tasks_v4",
+            "messages_seq",
+            "params",
+            "media_v4",
+            "bot_keyboard",
+            "bot_keyboard_topics",
+            "chat_settings_v2",
+            "user_settings",
+            "chat_pinned_v2",
+            "chat_pinned_count",
+            "chat_hints",
+            "botcache",
+            "users_data",
+            "users",
+            "chats",
+            "enc_chats",
+            "channel_users_v2",
+            "channel_admins_v3",
+            "contacts",
+            "user_photos",
+            "dialog_settings",
+            "web_recent_v3",
+            "stickers_v2",
+            "stickers_featured",
+            "stickers_dice",
+            "stickersets",
+            "hashtag_recent_v2",
+            "webpage_pending_v2",
+            "sent_files_v2",
+            "search_recent",
+            "media_counts_v2",
+            "keyvalue",
+            "bot_info_v2",
+            "pending_tasks",
+            "requested_holes",
+            "sharing_locations",
+            "shortcut_widget",
+            "emoji_keywords_v2",
+            "emoji_keywords_info_v2",
+            "wallpapers2",
+            "unread_push_messages",
+            "polls_v2",
+            "reactions",
+            "reaction_mentions",
+            "downloading_documents",
+            "animated_emoji",
+            "attach_menu_bots",
+            "premium_promo",
+            "emoji_statuses",
+            "messages_holes_topics",
+            "messages_topics",
+            "media_topics",
+            "media_holes_topics",
+            "topics",
+            "media_counts_topics",
+            "reaction_mentions_topics",
+            "emoji_groups"
+    };
+
+    public static void createTables(SQLiteDatabase database) throws SQLiteException {
+        database.executeFast("CREATE TABLE messages_holes(uid INTEGER, start INTEGER, end INTEGER, PRIMARY KEY(uid, start));").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_end_messages_holes ON messages_holes(uid, end);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE media_holes_v2(uid INTEGER, type INTEGER, start INTEGER, end INTEGER, PRIMARY KEY(uid, type, start));").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_end_media_holes_v2 ON media_holes_v2(uid, type, end);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE scheduled_messages_v2(mid INTEGER, uid INTEGER, send_state INTEGER, date INTEGER, data BLOB, ttl INTEGER, replydata BLOB, reply_to_message_id INTEGER, PRIMARY KEY(mid, uid))").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS send_state_idx_scheduled_messages_v2 ON scheduled_messages_v2(mid, send_state, date);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_date_idx_scheduled_messages_v2 ON scheduled_messages_v2(uid, date);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS reply_to_idx_scheduled_messages_v2 ON scheduled_messages_v2(mid, reply_to_message_id);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS idx_to_reply_scheduled_messages_v2 ON scheduled_messages_v2(reply_to_message_id, mid);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE messages_v2(mid INTEGER, uid INTEGER, read_state INTEGER, send_state INTEGER, date INTEGER, data BLOB, out INTEGER, ttl INTEGER, media INTEGER, replydata BLOB, imp INTEGER, mention INTEGER, forwards INTEGER, replies_data BLOB, thread_reply_id INTEGER, is_channel INTEGER, reply_to_message_id INTEGER, custom_params BLOB, group_id INTEGER, reply_to_story_id INTEGER, PRIMARY KEY(mid, uid))").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_mid_read_out_idx_messages_v2 ON messages_v2(uid, mid, read_state, out);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_date_mid_idx_messages_v2 ON messages_v2(uid, date, mid);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS mid_out_idx_messages_v2 ON messages_v2(mid, out);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS task_idx_messages_v2 ON messages_v2(uid, out, read_state, ttl, date, send_state);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS send_state_idx_messages_v2 ON messages_v2(mid, send_state, date);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_mention_idx_messages_v2 ON messages_v2(uid, mention, read_state);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS is_channel_idx_messages_v2 ON messages_v2(mid, is_channel);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS reply_to_idx_messages_v2 ON messages_v2(mid, reply_to_message_id);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS idx_to_reply_messages_v2 ON messages_v2(reply_to_message_id, mid);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_mid_groupid_messages_v2 ON messages_v2(uid, mid, group_id);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE download_queue(uid INTEGER, type INTEGER, date INTEGER, data BLOB, parent TEXT, PRIMARY KEY (uid, type));").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS type_date_idx_download_queue ON download_queue(type, date);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE user_contacts_v7(key TEXT PRIMARY KEY, uid INTEGER, fname TEXT, sname TEXT, imported INTEGER)").stepThis().dispose();
+        database.executeFast("CREATE TABLE user_phones_v7(key TEXT, phone TEXT, sphone TEXT, deleted INTEGER, PRIMARY KEY (key, phone))").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS sphone_deleted_idx_user_phones ON user_phones_v7(sphone, deleted);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE dialogs(did INTEGER PRIMARY KEY, date INTEGER, unread_count INTEGER, last_mid INTEGER, inbox_max INTEGER, outbox_max INTEGER, last_mid_i INTEGER, unread_count_i INTEGER, pts INTEGER, date_i INTEGER, pinned INTEGER, flags INTEGER, folder_id INTEGER, data BLOB, unread_reactions INTEGER, last_mid_group INTEGER, ttl_period INTEGER)").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS date_idx_dialogs ON dialogs(date);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS last_mid_idx_dialogs ON dialogs(last_mid);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS unread_count_idx_dialogs ON dialogs(unread_count);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS last_mid_i_idx_dialogs ON dialogs(last_mid_i);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS unread_count_i_idx_dialogs ON dialogs(unread_count_i);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS folder_id_idx_dialogs ON dialogs(folder_id);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS flags_idx_dialogs ON dialogs(flags);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE dialog_filter(id INTEGER PRIMARY KEY, ord INTEGER, unread_count INTEGER, flags INTEGER, title TEXT)").stepThis().dispose();
+        database.executeFast("CREATE TABLE dialog_filter_ep(id INTEGER, peer INTEGER, PRIMARY KEY (id, peer))").stepThis().dispose();
+        database.executeFast("CREATE TABLE dialog_filter_pin_v2(id INTEGER, peer INTEGER, pin INTEGER, PRIMARY KEY (id, peer))").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE randoms_v2(random_id INTEGER, mid INTEGER, uid INTEGER, PRIMARY KEY (random_id, mid, uid))").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS mid_idx_randoms_v2 ON randoms_v2(mid, uid);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE enc_tasks_v4(mid INTEGER, uid INTEGER, date INTEGER, media INTEGER, PRIMARY KEY(mid, uid, media))").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS date_idx_enc_tasks_v4 ON enc_tasks_v4(date);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE messages_seq(mid INTEGER PRIMARY KEY, seq_in INTEGER, seq_out INTEGER);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS seq_idx_messages_seq ON messages_seq(seq_in, seq_out);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE params(id INTEGER PRIMARY KEY, seq INTEGER, pts INTEGER, date INTEGER, qts INTEGER, lsv INTEGER, sg INTEGER, pbytes BLOB)").stepThis().dispose();
+        database.executeFast("INSERT INTO params VALUES(1, 0, 0, 0, 0, 0, 0, NULL)").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE media_v4(mid INTEGER, uid INTEGER, date INTEGER, type INTEGER, data BLOB, PRIMARY KEY(mid, uid, type))").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_mid_type_date_idx_media_v4 ON media_v4(uid, mid, type, date);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE bot_keyboard(uid INTEGER PRIMARY KEY, mid INTEGER, info BLOB)").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS bot_keyboard_idx_mid_v2 ON bot_keyboard(mid, uid);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE bot_keyboard_topics(uid INTEGER, tid INTEGER, mid INTEGER, info BLOB, PRIMARY KEY(uid, tid))").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS bot_keyboard_topics_idx_mid_v2 ON bot_keyboard_topics(mid, uid, tid);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE chat_settings_v2(uid INTEGER PRIMARY KEY, info BLOB, pinned INTEGER, online INTEGER, inviter INTEGER, links INTEGER, participants_count INTEGER)").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS chat_settings_pinned_idx ON chat_settings_v2(uid, pinned) WHERE pinned != 0;").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE user_settings(uid INTEGER PRIMARY KEY, info BLOB, pinned INTEGER)").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS user_settings_pinned_idx ON user_settings(uid, pinned) WHERE pinned != 0;").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE chat_pinned_v2(uid INTEGER, mid INTEGER, data BLOB, PRIMARY KEY (uid, mid));").stepThis().dispose();
+        database.executeFast("CREATE TABLE chat_pinned_count(uid INTEGER PRIMARY KEY, count INTEGER, end INTEGER);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE chat_hints(did INTEGER, type INTEGER, rating REAL, date INTEGER, PRIMARY KEY(did, type))").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS chat_hints_rating_idx ON chat_hints(rating);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE botcache(id TEXT PRIMARY KEY, date INTEGER, data BLOB)").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS botcache_date_idx ON botcache(date);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE users_data(uid INTEGER PRIMARY KEY, about TEXT)").stepThis().dispose();
+        database.executeFast("CREATE TABLE users(uid INTEGER PRIMARY KEY, name TEXT, status INTEGER, data BLOB)").stepThis().dispose();
+        database.executeFast("CREATE TABLE chats(uid INTEGER PRIMARY KEY, name TEXT, data BLOB)").stepThis().dispose();
+        database.executeFast("CREATE TABLE enc_chats(uid INTEGER PRIMARY KEY, user INTEGER, name TEXT, data BLOB, g BLOB, authkey BLOB, ttl INTEGER, layer INTEGER, seq_in INTEGER, seq_out INTEGER, use_count INTEGER, exchange_id INTEGER, key_date INTEGER, fprint INTEGER, fauthkey BLOB, khash BLOB, in_seq_no INTEGER, admin_id INTEGER, mtproto_seq INTEGER)").stepThis().dispose();
+        database.executeFast("CREATE TABLE channel_users_v2(did INTEGER, uid INTEGER, date INTEGER, data BLOB, PRIMARY KEY(did, uid))").stepThis().dispose();
+        database.executeFast("CREATE TABLE channel_admins_v3(did INTEGER, uid INTEGER, data BLOB, PRIMARY KEY(did, uid))").stepThis().dispose();
+        database.executeFast("CREATE TABLE contacts(uid INTEGER PRIMARY KEY, mutual INTEGER)").stepThis().dispose();
+        database.executeFast("CREATE TABLE user_photos(uid INTEGER, id INTEGER, data BLOB, PRIMARY KEY (uid, id))").stepThis().dispose();
+        database.executeFast("CREATE TABLE dialog_settings(did INTEGER PRIMARY KEY, flags INTEGER);").stepThis().dispose();
+        database.executeFast("CREATE TABLE web_recent_v3(id TEXT, type INTEGER, image_url TEXT, thumb_url TEXT, local_url TEXT, width INTEGER, height INTEGER, size INTEGER, date INTEGER, document BLOB, PRIMARY KEY (id, type));").stepThis().dispose();
+        database.executeFast("CREATE TABLE stickers_v2(id INTEGER PRIMARY KEY, data BLOB, date INTEGER, hash INTEGER);").stepThis().dispose();
+        database.executeFast("CREATE TABLE stickers_featured(id INTEGER PRIMARY KEY, data BLOB, unread BLOB, date INTEGER, hash INTEGER, premium INTEGER, emoji INTEGER);").stepThis().dispose();
+        database.executeFast("CREATE TABLE stickers_dice(emoji TEXT PRIMARY KEY, data BLOB, date INTEGER);").stepThis().dispose();
+        database.executeFast("CREATE TABLE stickersets(id INTEGER PRIMATE KEY, data BLOB, hash INTEGER);").stepThis().dispose();
+        database.executeFast("CREATE TABLE hashtag_recent_v2(id TEXT PRIMARY KEY, date INTEGER);").stepThis().dispose();
+        database.executeFast("CREATE TABLE webpage_pending_v2(id INTEGER, mid INTEGER, uid INTEGER, PRIMARY KEY (id, mid, uid));").stepThis().dispose();
+        database.executeFast("CREATE TABLE sent_files_v2(uid TEXT, type INTEGER, data BLOB, parent TEXT, PRIMARY KEY (uid, type))").stepThis().dispose();
+        database.executeFast("CREATE TABLE search_recent(did INTEGER PRIMARY KEY, date INTEGER);").stepThis().dispose();
+        database.executeFast("CREATE TABLE media_counts_v2(uid INTEGER, type INTEGER, count INTEGER, old INTEGER, PRIMARY KEY(uid, type))").stepThis().dispose();
+        database.executeFast("CREATE TABLE keyvalue(id TEXT PRIMARY KEY, value TEXT)").stepThis().dispose();
+        database.executeFast("CREATE TABLE bot_info_v2(uid INTEGER, dialogId INTEGER, info BLOB, PRIMARY KEY(uid, dialogId))").stepThis().dispose();
+        database.executeFast("CREATE TABLE pending_tasks(id INTEGER PRIMARY KEY, data BLOB);").stepThis().dispose();
+        database.executeFast("CREATE TABLE requested_holes(uid INTEGER, seq_out_start INTEGER, seq_out_end INTEGER, PRIMARY KEY (uid, seq_out_start, seq_out_end));").stepThis().dispose();
+        database.executeFast("CREATE TABLE sharing_locations(uid INTEGER PRIMARY KEY, mid INTEGER, date INTEGER, period INTEGER, message BLOB, proximity INTEGER);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE shortcut_widget(id INTEGER, did INTEGER, ord INTEGER, PRIMARY KEY (id, did));").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS shortcut_widget_did ON shortcut_widget(did);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE emoji_keywords_v2(lang TEXT, keyword TEXT, emoji TEXT, PRIMARY KEY(lang, keyword, emoji));").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS emoji_keywords_v2_keyword ON emoji_keywords_v2(keyword);").stepThis().dispose();
+        database.executeFast("CREATE TABLE emoji_keywords_info_v2(lang TEXT PRIMARY KEY, alias TEXT, version INTEGER, date INTEGER);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE wallpapers2(uid INTEGER PRIMARY KEY, data BLOB, num INTEGER)").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS wallpapers_num ON wallpapers2(num);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE unread_push_messages(uid INTEGER, mid INTEGER, random INTEGER, date INTEGER, data BLOB, fm TEXT, name TEXT, uname TEXT, flags INTEGER, PRIMARY KEY(uid, mid))").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS unread_push_messages_idx_date ON unread_push_messages(date);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS unread_push_messages_idx_random ON unread_push_messages(random);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE polls_v2(mid INTEGER, uid INTEGER, id INTEGER, PRIMARY KEY (mid, uid));").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS polls_id_v2 ON polls_v2(id);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE reactions(data BLOB, hash INTEGER, date INTEGER);").stepThis().dispose();
+        database.executeFast("CREATE TABLE reaction_mentions(message_id INTEGER, state INTEGER, dialog_id INTEGER, PRIMARY KEY(message_id, dialog_id))").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS reaction_mentions_did ON reaction_mentions(dialog_id);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE downloading_documents(data BLOB, hash INTEGER, id INTEGER, state INTEGER, date INTEGER, PRIMARY KEY(hash, id));").stepThis().dispose();
+        database.executeFast("CREATE TABLE animated_emoji(document_id INTEGER PRIMARY KEY, data BLOB);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE attach_menu_bots(data BLOB, hash INTEGER, date INTEGER);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE premium_promo(data BLOB, date INTEGER);").stepThis().dispose();
+        database.executeFast("CREATE TABLE emoji_statuses(data BLOB, type INTEGER);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE messages_holes_topics(uid INTEGER, topic_id INTEGER, start INTEGER, end INTEGER, PRIMARY KEY(uid, topic_id, start));").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_end_messages_holes ON messages_holes_topics(uid, topic_id, end);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE messages_topics(mid INTEGER, uid INTEGER, topic_id INTEGER, read_state INTEGER, send_state INTEGER, date INTEGER, data BLOB, out INTEGER, ttl INTEGER, media INTEGER, replydata BLOB, imp INTEGER, mention INTEGER, forwards INTEGER, replies_data BLOB, thread_reply_id INTEGER, is_channel INTEGER, reply_to_message_id INTEGER, custom_params BLOB, reply_to_story_id INTEGER, PRIMARY KEY(mid, topic_id, uid))").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_date_mid_idx_messages_topics ON messages_topics(uid, date, mid);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS mid_out_idx_messages_topics ON messages_topics(mid, out);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS task_idx_messages_topics ON messages_topics(uid, out, read_state, ttl, date, send_state);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS send_state_idx_messages_topics ON messages_topics(mid, send_state, date);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS is_channel_idx_messages_topics ON messages_topics(mid, is_channel);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS reply_to_idx_messages_topics ON messages_topics(mid, reply_to_message_id);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS idx_to_reply_messages_topics ON messages_topics(reply_to_message_id, mid);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS mid_uid_messages_topics ON messages_topics(mid, uid);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_mid_read_out_idx_messages_topics ON messages_topics(uid, topic_id, mid, read_state, out);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_mention_idx_messages_topics ON messages_topics(uid, topic_id, mention, read_state);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_topic_id_messages_topics ON messages_topics(uid, topic_id);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_topic_id_date_mid_messages_topics ON messages_topics(uid, topic_id, date, mid);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_topic_id_mid_messages_topics ON messages_topics(uid, topic_id, mid);").stepThis().dispose();
+
+
+        database.executeFast("CREATE TABLE media_topics(mid INTEGER, uid INTEGER, topic_id INTEGER, date INTEGER, type INTEGER, data BLOB, PRIMARY KEY(mid, uid, topic_id, type))").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_mid_type_date_idx_media_topics ON media_topics(uid, topic_id, mid, type, date);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE media_holes_topics(uid INTEGER, topic_id INTEGER, type INTEGER, start INTEGER, end INTEGER, PRIMARY KEY(uid, topic_id, type, start));").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS uid_end_media_holes_topics ON media_holes_topics(uid, topic_id, type, end);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE topics(did INTEGER, topic_id INTEGER, data BLOB, top_message INTEGER, topic_message BLOB, unread_count INTEGER, max_read_id INTEGER, unread_mentions INTEGER, unread_reactions INTEGER, read_outbox INTEGER, pinned INTEGER, total_messages_count INTEGER, hidden INTEGER, PRIMARY KEY(did, topic_id));").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS did_top_message_topics ON topics(did, top_message);").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS did_topics ON topics(did);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE media_counts_topics(uid INTEGER, topic_id INTEGER, type INTEGER, count INTEGER, old INTEGER, PRIMARY KEY(uid, topic_id, type))").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE reaction_mentions_topics(message_id INTEGER, state INTEGER, dialog_id INTEGER, topic_id INTEGER, PRIMARY KEY(message_id, dialog_id, topic_id))").stepThis().dispose();
+        database.executeFast("CREATE INDEX IF NOT EXISTS reaction_mentions_topics_did ON reaction_mentions_topics(dialog_id, topic_id);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE emoji_groups(type INTEGER PRIMARY KEY, data BLOB)").stepThis().dispose();
+        database.executeFast("CREATE TABLE app_config(data BLOB)").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE stories (dialog_id INTEGER, story_id INTEGER, data BLOB, local_path TEXT, local_thumb_path TEXT, custom_params BLOB, PRIMARY KEY (dialog_id, story_id));").stepThis().dispose();
+        database.executeFast("CREATE TABLE stories_counter (dialog_id INTEGER PRIMARY KEY, count INTEGER, max_read INTEGER);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE profile_stories (dialog_id INTEGER, story_id INTEGER, data BLOB, PRIMARY KEY(dialog_id, story_id));").stepThis().dispose();
+        database.executeFast("CREATE TABLE archived_stories (story_id INTEGER PRIMARY KEY, data BLOB);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE story_drafts (id INTEGER PRIMARY KEY, date INTEGER, data BLOB, type INTEGER);").stepThis().dispose();
+
+        database.executeFast("CREATE TABLE story_pushes (uid INTEGER, sid INTEGER, date INTEGER, localName TEXT, flags INTEGER, expire_date INTEGER, PRIMARY KEY(uid, sid));").stepThis().dispose();
+
+        database.executeFast("PRAGMA user_version = " + MessagesStorage.LAST_DB_VERSION).stepThis().dispose();
+
     }
 
     public boolean isDatabaseMigrationInProgress() {
@@ -576,6 +716,33 @@ public class MessagesStorage extends BaseController {
     }
 
     private void cleanupInternal(boolean deleteFiles) {
+        if (deleteFiles) {
+            reset();
+        } else {
+            clearDatabaseValues();
+        }
+        if (database != null) {
+            database.close();
+            database = null;
+        }
+        if (deleteFiles) {
+            if (cacheFile != null) {
+                cacheFile.delete();
+                cacheFile = null;
+            }
+            if (walCacheFile != null) {
+                walCacheFile.delete();
+                walCacheFile = null;
+            }
+            if (shmCacheFile != null) {
+                shmCacheFile.delete();
+                shmCacheFile = null;
+            }
+
+        }
+    }
+
+    public void clearDatabaseValues() {
         lastDateValue = 0;
         lastSeqValue = 0;
         lastPtsValue = 0;
@@ -596,24 +763,6 @@ public class MessagesStorage extends BaseController {
 
         secretPBytes = null;
         secretG = 0;
-        if (database != null) {
-            database.close();
-            database = null;
-        }
-        if (deleteFiles) {
-            if (cacheFile != null) {
-                cacheFile.delete();
-                cacheFile = null;
-            }
-            if (walCacheFile != null) {
-                walCacheFile.delete();
-                walCacheFile = null;
-            }
-            if (shmCacheFile != null) {
-                shmCacheFile.delete();
-                shmCacheFile = null;
-            }
-        }
     }
 
     public void cleanup(boolean isLogin) {
@@ -641,9 +790,34 @@ public class MessagesStorage extends BaseController {
                 state.dispose();
                 data.reuse();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
+    }
+
+    boolean tryRecover;
+
+    public void checkSQLException(Throwable e) {
+        checkSQLException(e, true);
+    }
+
+    private void checkSQLException(Throwable e, boolean logToAppCenter) {
+        if (e instanceof SQLiteException && e.getMessage() != null && e.getMessage().contains("is malformed") && !tryRecover) {
+            tryRecover = true;
+            FileLog.e("disk image malformed detected, try recover");
+            if (recoverDatabase()) {
+                tryRecover = false;
+                clearLoadingDialogsOffsets();
+                AndroidUtilities.runOnUIThread(() -> {
+                   getNotificationCenter().postNotificationName(NotificationCenter.onDatabaseReset);
+                });
+                FileLog.e(new Exception("database restored!!"));
+            } else {
+                FileLog.e(new Exception(e), logToAppCenter);
+            }
+        } else {
+            FileLog.e(e, logToAppCenter);
+        }
     }
 
     public void fixNotificationSettings() {
@@ -689,10 +863,10 @@ public class MessagesStorage extends BaseController {
                     state.dispose();
                     database.commitTransaction();
                 } catch (Exception e) {
-                    FileLog.e(e);
+                    checkSQLException(e);
                 }
             } catch (Throwable e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -710,7 +884,7 @@ public class MessagesStorage extends BaseController {
                 state.step();
                 state.dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 data.reuse();
             }
@@ -723,7 +897,7 @@ public class MessagesStorage extends BaseController {
             try {
                 database.executeFast("DELETE FROM pending_tasks WHERE id = " + id).stepThis().dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -958,7 +1132,7 @@ public class MessagesStorage extends BaseController {
                 }
                 cursor.dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -972,7 +1146,7 @@ public class MessagesStorage extends BaseController {
                 state.step();
                 state.dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -994,7 +1168,7 @@ public class MessagesStorage extends BaseController {
             lastSavedDate = date;
             lastSavedQts = qts;
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
     }
 
@@ -1021,7 +1195,55 @@ public class MessagesStorage extends BaseController {
                 database.executeFast(String.format(Locale.US, "REPLACE INTO dialog_settings VALUES(%d, %d)", did, flags)).stepThis().dispose();
                 resetAllUnreadCounters(true);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
+            }
+        });
+    }
+
+    public void putStoryPushMessage(NotificationsController.StoryNotification push) {
+        storageQueue.postRunnable(() -> {
+            try {
+                database.executeFast("DELETE FROM story_pushes WHERE uid = " + push.dialogId).stepThis().dispose();
+                SQLitePreparedStatement state = database.executeFast("REPLACE INTO story_pushes VALUES(?, ?, ?, ?, ?, ?)");
+                for (Map.Entry<Integer, Pair<Long, Long>> e : push.dateByIds.entrySet()) {
+                    int id = e.getKey();
+                    long date = e.getValue().first;
+                    long expire_date = e.getValue().second;
+                    state.requery();
+                    state.bindLong(1, push.dialogId);
+                    state.bindInteger(2, id);
+                    state.bindLong(3, date);
+                    if (push.localName == null) {
+                        push.localName = "";
+                    }
+                    state.bindString(4, push.localName);
+                    state.bindInteger(5, push.hidden ? 1 : 0);
+                    state.bindLong(6, expire_date);
+                    state.step();
+                }
+                state.dispose();
+            } catch (Exception e) {
+                checkSQLException(e);
+            }
+        });
+    }
+
+    public void deleteStoryPushMessage(long dialogId) {
+        storageQueue.postRunnable(() -> {
+            try {
+                database.executeFast("DELETE FROM story_pushes WHERE uid = " + dialogId).stepThis().dispose();
+            } catch (Exception e) {
+                checkSQLException(e);
+            }
+        });
+    }
+
+    public void deleteAllStoryPushMessages() {
+        storageQueue.postRunnable(() -> {
+            try {
+                database.executeFast("DELETE FROM story_pushes").stepThis().dispose();
+            } catch (Exception e) {
+                checkSQLException(e);
             }
         });
     }
@@ -1068,7 +1290,7 @@ public class MessagesStorage extends BaseController {
                 data.reuse();
                 state.dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -1096,6 +1318,9 @@ public class MessagesStorage extends BaseController {
                 database.executeFast("DELETE FROM media_counts_topics").stepThis().dispose();
                 database.executeFast("DELETE FROM chat_pinned_v2").stepThis().dispose();
                 database.executeFast("DELETE FROM chat_pinned_count").stepThis().dispose();
+                database.executeFast("DELETE FROM profile_stories").stepThis().dispose();
+                database.executeFast("DELETE FROM archived_stories").stepThis().dispose();
+                database.executeFast("DELETE FROM story_pushes").stepThis().dispose();
 
                 cursor = database.queryFinalized("SELECT did FROM dialogs WHERE 1");
                 while (cursor.next()) {
@@ -1142,17 +1367,18 @@ public class MessagesStorage extends BaseController {
                                 }
                             }
                         } catch (Exception e) {
-                            FileLog.e(e);
+                            checkSQLException(e);
                         }
                         cursor2.dispose();
 
                         database.executeFast("DELETE FROM messages_v2 WHERE uid = " + did + " AND mid != " + last_mid_i + " AND mid != " + last_mid).stepThis().dispose();
                         database.executeFast("DELETE FROM messages_holes WHERE uid = " + did).stepThis().dispose();
                         database.executeFast("DELETE FROM bot_keyboard WHERE uid = " + did).stepThis().dispose();
+                        database.executeFast("DELETE FROM bot_keyboard_topics WHERE uid = " + did).stepThis().dispose();
                         database.executeFast("DELETE FROM media_counts_v2 WHERE uid = " + did).stepThis().dispose();
                         database.executeFast("DELETE FROM media_v4 WHERE uid = " + did).stepThis().dispose();
                         database.executeFast("DELETE FROM media_holes_v2 WHERE uid = " + did).stepThis().dispose();
-                        MediaDataController.getInstance(currentAccount).clearBotKeyboard(did, null);
+                        MediaDataController.getInstance(currentAccount).clearBotKeyboard(did);
                         if (messageId != -1) {
                             MessagesStorage.createFirstHoles(did, state5, state6, messageId, 0);
                         }
@@ -1172,7 +1398,7 @@ public class MessagesStorage extends BaseController {
 
                 getMessagesController().getTopicsController().databaseCleared();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -1186,10 +1412,7 @@ public class MessagesStorage extends BaseController {
                 if (cursor != null) {
                     cursor.dispose();
                 }
-                AndroidUtilities.runOnUIThread(() -> {
-                    NotificationCenter.getInstance(currentAccount).postNotificationName(NotificationCenter.didClearDatabase);
-                    getMediaDataController().loadAttachMenuBots(false, true);
-                });
+                reset();
             }
         });
     }
@@ -1282,7 +1505,7 @@ public class MessagesStorage extends BaseController {
             resetAllUnreadCounters(false);
 
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
 
         } finally {
             if (state != null) {
@@ -1356,7 +1579,7 @@ public class MessagesStorage extends BaseController {
                     data.reuse();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -1469,7 +1692,7 @@ public class MessagesStorage extends BaseController {
                                     }
                                 }
                             } catch (Exception e) {
-                                FileLog.e(e);
+                                checkSQLException(e);
                             }
                         }
                     }
@@ -1500,7 +1723,7 @@ public class MessagesStorage extends BaseController {
                                 }
                             }
                         } catch (Exception e) {
-                            FileLog.e(e);
+                            checkSQLException(e);
                         }
                     }
 
@@ -1528,7 +1751,7 @@ public class MessagesStorage extends BaseController {
                 }
 
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -1583,7 +1806,7 @@ public class MessagesStorage extends BaseController {
 
             }
         } catch (Throwable e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
     }
 
@@ -1633,7 +1856,7 @@ public class MessagesStorage extends BaseController {
 
             }
         } catch (Throwable e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
 
     }
@@ -1649,6 +1872,18 @@ public class MessagesStorage extends BaseController {
         });
     }
 
+    public void removeTopics(long dialogId, ArrayList<Integer> topicIds) {
+        storageQueue.postRunnable(() -> {
+            try {
+                String topics = TextUtils.join(", ", topicIds);
+                database.executeFast(String.format(Locale.US, "DELETE FROM topics WHERE did = %d AND topic_id IN (%s)", dialogId, topics)).stepThis().dispose();
+                database.executeFast(String.format(Locale.US, "DELETE FROM messages_topics WHERE uid = %d AND topic_id IN (%s)", dialogId, topics)).stepThis().dispose();
+            } catch (SQLiteException e) {
+                e.printStackTrace();
+            }
+        });
+    }
+
     public void updateTopicsWithReadMessages(HashMap<TopicKey, Integer> topicsReadOutbox) {
         storageQueue.postRunnable(() -> {
             for (TopicKey topicKey : topicsReadOutbox.keySet()) {
@@ -1656,7 +1891,7 @@ public class MessagesStorage extends BaseController {
                 try {
                     database.executeFast(String.format(Locale.US, "UPDATE topics SET read_outbox = max((SELECT read_outbox FROM topics WHERE did = %d AND topic_id = %d), %d) WHERE did = %d AND topic_id = %d", topicKey.dialogId, topicKey.topicId, value, topicKey.dialogId, topicKey.topicId)).stepThis().dispose();
                 } catch (SQLiteException e) {
-                   FileLog.e(e);
+                   checkSQLException(e);
                 }
             }
         });
@@ -1667,7 +1902,7 @@ public class MessagesStorage extends BaseController {
             try {
                 database.executeFast(String.format(Locale.US, "UPDATE dialogs SET ttl_period = %d WHERE did = %d", ttl, did)).stepThis().dispose();
             } catch (SQLiteException e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -1678,6 +1913,38 @@ public class MessagesStorage extends BaseController {
         files.add(walCacheFile);
         files.add(shmCacheFile);
         return files;
+    }
+
+    public void reset() {
+        clearDatabaseValues();
+
+        AndroidUtilities.runOnUIThread(() -> {
+            for (int a = 0; a < 2; a++) {
+                getUserConfig().setDialogsLoadOffset(a, 0, 0, 0, 0, 0, 0);
+                getUserConfig().setTotalDialogsCount(a, 0);
+            }
+            getUserConfig().clearFilters();
+            getUserConfig().clearPinnedDialogsLoaded();
+
+            getNotificationCenter().postNotificationName(NotificationCenter.didClearDatabase);
+            getMediaDataController().loadAttachMenuBots(false, true);
+            getNotificationCenter().postNotificationName(NotificationCenter.onDatabaseReset);
+            
+            getMessagesController().getStoriesController().cleanup();
+        });
+    }
+
+    public void fullReset() {
+        storageQueue.postRunnable(() -> {
+            cleanupInternal(true);
+            clearLoadingDialogsOffsets();
+            openDatabase(1);
+            AndroidUtilities.runOnUIThread(() -> {
+                getNotificationCenter().postNotificationName(NotificationCenter.onDatabaseReset);
+                getNotificationCenter().postNotificationName(NotificationCenter.didClearDatabase);
+            });
+        });
+
     }
 
     private static class ReadDialog {
@@ -1754,7 +2021,7 @@ public class MessagesStorage extends BaseController {
                     }
                 });
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -1843,7 +2110,7 @@ public class MessagesStorage extends BaseController {
                                 }
                             }
                         } catch (Exception e) {
-                            FileLog.e(e);
+                            checkSQLException(e);
                         }
                     } else {
                         data.reuse();
@@ -1935,7 +2202,7 @@ public class MessagesStorage extends BaseController {
                                     }
                                 }
                             } catch (Exception e) {
-                                FileLog.e(e);
+                                checkSQLException(e);
                             }
                         } else {
                             data.reuse();
@@ -2115,9 +2382,9 @@ public class MessagesStorage extends BaseController {
                     getChatsInternal(TextUtils.join(",", chatsToLoad), chats);
                 }
 
-                getMessagesController().processLoadedDialogFilters(new ArrayList<>(dialogFilters), dialogs, null, users, chats, encryptedChats, 0);
+                getMessagesController().processLoadedDialogFilters(new ArrayList<>(dialogFilters), dialogs, null, users, chats, encryptedChats, 0, null);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (filtersCursor != null) {
                     filtersCursor.dispose();
@@ -2524,7 +2791,7 @@ public class MessagesStorage extends BaseController {
                 }
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (cursor != null) {
                 cursor.dispose();
@@ -2537,7 +2804,11 @@ public class MessagesStorage extends BaseController {
         try {
             if (!dialogFilters.contains(filter)) {
                 if (atBegin) {
-                    dialogFilters.add(0, filter);
+                    if (dialogFilters.get(0).isDefault()) {
+                        dialogFilters.add(1, filter);
+                    } else {
+                        dialogFilters.add(0, filter);
+                    }
                 } else {
                     dialogFilters.add(filter);
                 }
@@ -2592,7 +2863,7 @@ public class MessagesStorage extends BaseController {
                 database.commitTransaction();
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (database != null) {
                 database.commitTransaction();
@@ -2603,7 +2874,29 @@ public class MessagesStorage extends BaseController {
         }
     }
 
-    public void checkLoadedRemoteFilters(TLRPC.Vector vector) {
+    private ArrayList<Long> toPeerIds(ArrayList<TLRPC.InputPeer> inputPeers) {
+        ArrayList<Long> array = new ArrayList<Long>();
+        if (inputPeers == null) {
+            return array;
+        }
+        final int count = inputPeers.size();
+        for (int i = 0; i < count; ++i) {
+            TLRPC.InputPeer peer = inputPeers.get(i);
+            if (peer == null) {
+                continue;
+            }
+            long id;
+            if (peer.user_id != 0) {
+                id = peer.user_id;
+            } else {
+                id = -(peer.chat_id != 0 ? peer.chat_id : peer.channel_id);
+            }
+            array.add(id);
+        }
+        return array;
+    }
+
+    public void checkLoadedRemoteFilters(TLRPC.Vector vector, Runnable onDone) {
         storageQueue.postRunnable(() -> {
             try {
                 SparseArray<MessagesController.DialogFilter> filtersToDelete = new SparseArray<>();
@@ -2612,14 +2905,15 @@ public class MessagesStorage extends BaseController {
                     filtersToDelete.put(filter.id, filter);
                 }
                 ArrayList<Integer> filtersOrder = new ArrayList<>();
+
                 ArrayList<Long> usersToLoad = new ArrayList<>();
                 HashMap<Long, TLRPC.InputPeer> usersToLoadMap = new HashMap<>();
                 ArrayList<Long> chatsToLoad = new ArrayList<>();
                 HashMap<Long, TLRPC.InputPeer> chatsToLoadMap = new HashMap<>();
                 ArrayList<Long> dialogsToLoad = new ArrayList<>();
                 HashMap<Long, TLRPC.InputPeer> dialogsToLoadMap = new HashMap<>();
+
                 ArrayList<MessagesController.DialogFilter> filtersToSave = new ArrayList<>();
-                HashMap<Integer, HashSet<Long>> filterUserRemovals = new HashMap<>();
                 HashMap<Integer, HashSet<Long>> filterDialogRemovals = new HashMap<>();
                 HashSet<Integer> filtersUnreadCounterReset = new HashSet<>();
                 for (int a = 0, N = vector.objects.size(); a < N; a++) {
@@ -2649,6 +2943,12 @@ public class MessagesStorage extends BaseController {
                     }
                     if (newFilter.exclude_archived) {
                         newFlags |= MessagesController.DIALOG_FILTER_FLAG_EXCLUDE_ARCHIVED;
+                    }
+                    if (newFilter instanceof TLRPC.TL_dialogFilterChatlist) {
+                        newFlags |= MessagesController.DIALOG_FILTER_FLAG_CHATLIST;
+                        if (newFilter.has_my_invites) {
+                            newFlags |= MessagesController.DIALOG_FILTER_FLAG_CHATLIST_ADMIN;
+                        }
                     }
 
                     MessagesController.DialogFilter filter = dialogFiltersMap.get(newFilter.id);
@@ -2703,7 +3003,6 @@ public class MessagesStorage extends BaseController {
                                 }
                             }
                         }
-
                         for (int c = 0, N2 = filter.pinnedDialogs.size(); c < N2; c++) {
                             long did = filter.pinnedDialogs.keyAt(c);
                             if (DialogObject.isEncryptedDialog(did)) {
@@ -2712,83 +3011,73 @@ public class MessagesStorage extends BaseController {
                             existingDialogsIds.add(did);
                             existingIds.remove(did);
                         }
-                        for (int c = 0; c < 2; c++) {
-                            ArrayList<TLRPC.InputPeer> fromArray = c == 0 ? newFilter.include_peers : newFilter.exclude_peers;
-                            ArrayList<Long> toArray = c == 0 ? filter.alwaysShow : filter.neverShow;
 
-                            if (c == 0) {
-                                filter.pinnedDialogs.clear();
-                                for (int b = 0, N2 = newFilter.pinned_peers.size(); b < N2; b++) {
-                                    TLRPC.InputPeer peer = newFilter.pinned_peers.get(b);
-                                    Long id;
-                                    if (peer.user_id != 0) {
-                                        id = peer.user_id;
-                                    } else {
-                                        id = -(peer.chat_id != 0 ? peer.chat_id : peer.channel_id);
-                                    }
-                                    if (!filter.alwaysShow.contains(id)) {
-                                        filter.alwaysShow.add(id);
-                                    }
-                                    int index = filter.pinnedDialogs.size();
-                                    if (secretChatsMap != null) {
-                                        Long did;
-                                        while ((did = secretChatsMap.remove(index)) != null) {
-                                            filter.pinnedDialogs.put(did, index);
-                                            index++;
-                                        }
-                                    }
-                                    filter.pinnedDialogs.put(id, index);
-                                    existingIds.remove(id);
-                                    if (!existingDialogsIds.remove(id)) {
-                                        changed = true;
-                                        if (!dialogsToLoadMap.containsKey(id)) {
-                                            dialogsToLoad.add(id);
-                                            dialogsToLoadMap.put(id, peer);
-                                        }
-                                    }
-                                }
-                                if (secretChatsMap != null) {
-                                    for (LinkedHashMap.Entry<Integer, Long> entry : secretChatsMap.entrySet()) {
-                                        filter.pinnedDialogs.put(entry.getValue(), filter.pinnedDialogs.size());
-                                    }
+                        filter.pinnedDialogs.clear();
+                        for (int b = 0, N2 = newFilter.pinned_peers.size(); b < N2; b++) {
+                            TLRPC.InputPeer peer = newFilter.pinned_peers.get(b);
+                            Long id;
+                            if (peer.user_id != 0) {
+                                id = peer.user_id;
+                            } else {
+                                id = -(peer.chat_id != 0 ? peer.chat_id : peer.channel_id);
+                            }
+                            int index = filter.pinnedDialogs.size();
+                            if (secretChatsMap != null) {
+                                Long did;
+                                while ((did = secretChatsMap.remove(index)) != null) {
+                                    filter.pinnedDialogs.put(did, index);
+                                    index++;
                                 }
                             }
-                            for (int b = 0, N2 = fromArray.size(); b < N2; b++) {
-                                TLRPC.InputPeer peer = fromArray.get(b);
-                                if (peer.user_id != 0) {
-                                    Long uid = peer.user_id;
-                                    if (!existingIds.remove(uid)) {
-                                        changed = true;
-                                        if (!toArray.contains(uid)) {
-                                            toArray.add(uid);
-                                        }
-                                        if (!usersToLoadMap.containsKey(uid)) {
-                                            usersToLoad.add(uid);
-                                            usersToLoadMap.put(uid, peer);
-                                            unreadChanged = true;
-                                        }
-                                    }
-                                } else {
-                                    Long chatId = peer.chat_id != 0 ? peer.chat_id : peer.channel_id;
-                                    Long dialogId = -chatId;
-                                    if (!existingIds.remove(dialogId)) {
-                                        changed = true;
-                                        if (!toArray.contains(dialogId)) {
-                                            toArray.add(dialogId);
-                                        }
-                                        if (!chatsToLoadMap.containsKey(chatId)) {
-                                            chatsToLoad.add(chatId);
-                                            chatsToLoadMap.put(chatId, peer);
-                                            unreadChanged = true;
-                                        }
-                                    }
+                            filter.pinnedDialogs.put(id, index);
+                            existingIds.remove(id);
+                            if (!existingDialogsIds.remove(id)) {
+                                changed = true;
+                                if (!dialogsToLoadMap.containsKey(id)) {
+                                    dialogsToLoad.add(id);
+                                    dialogsToLoadMap.put(id, peer);
                                 }
                             }
                         }
-                        if (!existingIds.isEmpty()) {
-                            filterUserRemovals.put(filter.id, existingIds);
-                            unreadChanged = true;
-                            changed = true;
+                        if (secretChatsMap != null) {
+                            for (LinkedHashMap.Entry<Integer, Long> entry : secretChatsMap.entrySet()) {
+                                filter.pinnedDialogs.put(entry.getValue(), filter.pinnedDialogs.size());
+                            }
+                        }
+
+                        for (int c = 0; c < 2; c++) {
+                            ArrayList<Long> fromArray = toPeerIds(c == 0 ? newFilter.include_peers : newFilter.exclude_peers);
+                            ArrayList<Long> toArray = c == 0 ? filter.alwaysShow : filter.neverShow;
+
+                            if (c == 0) {
+                                // put pinned_peers into include_peers (alwaysShow)
+                                ArrayList<Long> pinnedArray = toPeerIds(newFilter.pinned_peers);
+                                for (int i = 0; i < pinnedArray.size(); ++i) {
+                                    fromArray.remove(pinnedArray.get(i));
+                                }
+                                fromArray.addAll(0, pinnedArray);
+                            }
+
+                            final int fromArrayCount = fromArray.size();
+                            boolean isDifferent = fromArray.size() != toArray.size();
+                            if (!isDifferent) {
+                                for (int i = 0; i < fromArrayCount; ++i) {
+                                    if (!toArray.contains(fromArray.get(i))) {
+                                        isDifferent = true;
+                                        break;
+                                    }
+                                }
+                            }
+
+                            if (isDifferent) {
+                                unreadChanged = true;
+                                changed = true;
+                                if (c == 0) {
+                                    filter.alwaysShow = fromArray;
+                                } else {
+                                    filter.neverShow = fromArray;
+                                }
+                            }
                         }
                         if (!existingDialogsIds.isEmpty()) {
                             filterDialogRemovals.put(filter.id, existingDialogsIds);
@@ -2884,17 +3173,17 @@ public class MessagesStorage extends BaseController {
                 }
 
                 if (usersToLoadMap.isEmpty() && chatsToLoadMap.isEmpty() && dialogsToLoadMap.isEmpty()) {
-                    processLoadedFilterPeersInternal(dialogs, null, users, chats, filtersToSave, filtersToDelete, filtersOrder, filterDialogRemovals, filterUserRemovals, filtersUnreadCounterReset);
+                    processLoadedFilterPeersInternal(dialogs, null, users, chats, filtersToSave, filtersToDelete, filtersOrder, filterDialogRemovals, filtersUnreadCounterReset, onDone);
                 } else {
-                    getMessagesController().loadFilterPeers(dialogsToLoadMap, usersToLoadMap, chatsToLoadMap, dialogs, new TLRPC.TL_messages_dialogs(), users, chats, filtersToSave, filtersToDelete, filtersOrder, filterDialogRemovals, filterUserRemovals, filtersUnreadCounterReset);
+                    getMessagesController().loadFilterPeers(dialogsToLoadMap, usersToLoadMap, chatsToLoadMap, dialogs, new TLRPC.TL_messages_dialogs(), users, chats, filtersToSave, filtersToDelete, filtersOrder, filterDialogRemovals, filtersUnreadCounterReset, onDone);
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
 
-    private void processLoadedFilterPeersInternal(TLRPC.messages_Dialogs pinnedDialogs, TLRPC.messages_Dialogs pinnedRemoteDialogs, ArrayList<TLRPC.User> users, ArrayList<TLRPC.Chat> chats, ArrayList<MessagesController.DialogFilter> filtersToSave, SparseArray<MessagesController.DialogFilter> filtersToDelete, ArrayList<Integer> filtersOrder, HashMap<Integer, HashSet<Long>> filterDialogRemovals, HashMap<Integer, HashSet<Long>> filterUserRemovals, HashSet<Integer> filtersUnreadCounterReset) {
+    private void processLoadedFilterPeersInternal(TLRPC.messages_Dialogs pinnedDialogs, TLRPC.messages_Dialogs pinnedRemoteDialogs, ArrayList<TLRPC.User> users, ArrayList<TLRPC.Chat> chats, ArrayList<MessagesController.DialogFilter> filtersToSave, SparseArray<MessagesController.DialogFilter> filtersToDelete, ArrayList<Integer> filtersOrder, HashMap<Integer, HashSet<Long>> filterDialogRemovals, HashSet<Integer> filtersUnreadCounterReset, Runnable onDone) {
         boolean anythingChanged = false;
         putUsersAndChats(users, chats, true, false);
         for (int a = 0, N = filtersToDelete.size(); a < N; a++) {
@@ -2907,16 +3196,6 @@ public class MessagesStorage extends BaseController {
                 continue;
             }
             filter.pendingUnreadCount = -1;
-        }
-        for (HashMap.Entry<Integer, HashSet<Long>> entry : filterUserRemovals.entrySet()) {
-            MessagesController.DialogFilter filter = dialogFiltersMap.get(entry.getKey());
-            if (filter == null) {
-                continue;
-            }
-            HashSet<Long> set = entry.getValue();
-            filter.alwaysShow.removeAll(set);
-            filter.neverShow.removeAll(set);
-            anythingChanged = true;
         }
         for (HashMap.Entry<Integer, HashSet<Long>> entry : filterDialogRemovals.entrySet()) {
             MessagesController.DialogFilter filter = dialogFiltersMap.get(entry.getKey());
@@ -2956,11 +3235,11 @@ public class MessagesStorage extends BaseController {
         }
         int remote = anythingChanged ? 1 : 2;
         calcUnreadCounters(true);
-        getMessagesController().processLoadedDialogFilters(new ArrayList<>(dialogFilters), pinnedDialogs, pinnedRemoteDialogs, users, chats, null, remote);
+        getMessagesController().processLoadedDialogFilters(new ArrayList<>(dialogFilters), pinnedDialogs, pinnedRemoteDialogs, users, chats, null, remote, onDone);
     }
 
-    protected void processLoadedFilterPeers(TLRPC.messages_Dialogs pinnedDialogs, TLRPC.messages_Dialogs pinnedRemoteDialogs, ArrayList<TLRPC.User> users, ArrayList<TLRPC.Chat> chats, ArrayList<MessagesController.DialogFilter> filtersToSave, SparseArray<MessagesController.DialogFilter> filtersToDelete, ArrayList<Integer> filtersOrder, HashMap<Integer, HashSet<Long>> filterDialogRemovals, HashMap<Integer, HashSet<Long>> filterUserRemovals, HashSet<Integer> filtersUnreadCounterReset) {
-        storageQueue.postRunnable(() -> processLoadedFilterPeersInternal(pinnedDialogs, pinnedRemoteDialogs, users, chats, filtersToSave, filtersToDelete, filtersOrder, filterDialogRemovals, filterUserRemovals, filtersUnreadCounterReset));
+    protected void processLoadedFilterPeers(TLRPC.messages_Dialogs pinnedDialogs, TLRPC.messages_Dialogs pinnedRemoteDialogs, ArrayList<TLRPC.User> users, ArrayList<TLRPC.Chat> chats, ArrayList<MessagesController.DialogFilter> filtersToSave, SparseArray<MessagesController.DialogFilter> filtersToDelete, ArrayList<Integer> filtersOrder, HashMap<Integer, HashSet<Long>> filterDialogRemovals, HashSet<Integer> filtersUnreadCounterReset, Runnable onDone) {
+        storageQueue.postRunnable(() -> processLoadedFilterPeersInternal(pinnedDialogs, pinnedRemoteDialogs, users, chats, filtersToSave, filtersToDelete, filtersOrder, filterDialogRemovals, filtersUnreadCounterReset, onDone));
     }
 
     private void deleteDialogFilterInternal(MessagesController.DialogFilter filter) {
@@ -2971,7 +3250,7 @@ public class MessagesStorage extends BaseController {
             database.executeFast("DELETE FROM dialog_filter_ep WHERE id = " + filter.id).stepThis().dispose();
             database.executeFast("DELETE FROM dialog_filter_pin_v2 WHERE id = " + filter.id).stepThis().dispose();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
     }
 
@@ -3010,7 +3289,7 @@ public class MessagesStorage extends BaseController {
             state.dispose();
             state = null;
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (state != null) {
                 state.dispose();
@@ -3070,34 +3349,40 @@ public class MessagesStorage extends BaseController {
             }
             SQLiteCursor cursor = null;
             try {
-                if (scheduled) {
-                    cursor = database.queryFinalized(String.format(Locale.US, "SELECT data, mid, date, uid FROM scheduled_messages_v2 WHERE mid IN(%s) AND uid = %d", TextUtils.join(",", ids), dialogId));
-                } else {
-                    cursor = database.queryFinalized(String.format(Locale.US, "SELECT data, mid, date, uid FROM messages_v2 WHERE mid IN(%s) AND uid = %d", TextUtils.join(",", ids), dialogId));
-                }
-                while (cursor.next()) {
-                    NativeByteBuffer data = cursor.byteBufferValue(0);
-                    if (data != null) {
-                        TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
-                        message.readAttachPath(data, getUserConfig().clientUserId);
-                        data.reuse();
-                        message.id = cursor.intValue(1);
-                        message.date = cursor.intValue(2);
-                        message.dialog_id = cursor.longValue(3);
+                for (int i = 0; i < 2; i++) {
+                    if (i == 1 && !scheduled) {
+                        continue;
+                    }
+                    boolean findInScheduled = i == 1;
+                    if (findInScheduled) {
+                        cursor = database.queryFinalized(String.format(Locale.US, "SELECT data, mid, date, uid FROM scheduled_messages_v2 WHERE mid IN(%s) AND uid = %d", TextUtils.join(",", ids), dialogId));
+                    } else {
+                        cursor = database.queryFinalized(String.format(Locale.US, "SELECT data, mid, date, uid FROM messages_v2 WHERE mid IN(%s) AND uid = %d", TextUtils.join(",", ids), dialogId));
+                    }
+                    while (cursor.next()) {
+                        NativeByteBuffer data = cursor.byteBufferValue(0);
+                        if (data != null) {
+                            TLRPC.Message message = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                            message.readAttachPath(data, getUserConfig().clientUserId);
+                            data.reuse();
+                            message.id = cursor.intValue(1);
+                            message.date = cursor.intValue(2);
+                            message.dialog_id = cursor.longValue(3);
 
-                        addUsersAndChatsFromMessage(message, usersToLoad, chatsToLoad, null);
+                            addUsersAndChatsFromMessage(message, usersToLoad, chatsToLoad, null);
 
-                        ArrayList<TLRPC.Message> arrayList = owners.get(message.id);
-                        if (arrayList != null) {
-                            for (int a = 0, N = arrayList.size(); a < N; a++) {
-                                TLRPC.Message m = arrayList.get(a);
-                                m.replyMessage = message;
-                                MessageObject.getDialogId(message);
+                            ArrayList<TLRPC.Message> arrayList = owners.get(message.id);
+                            if (arrayList != null) {
+                                for (int a = 0, N = arrayList.size(); a < N; a++) {
+                                    TLRPC.Message m = arrayList.get(a);
+                                    m.replyMessage = message;
+                                    MessageObject.getDialogId(message);
+                                }
                             }
                         }
                     }
+                    cursor.dispose();
                 }
-                cursor.dispose();
             } catch (Exception e) {
                 throw e;
             } finally {
@@ -3207,7 +3492,7 @@ public class MessagesStorage extends BaseController {
                                     }
                                 }
                             } catch (Exception e) {
-                                FileLog.e(e);
+                                checkSQLException(e);
                             }
                         }
                     }
@@ -3285,9 +3570,55 @@ public class MessagesStorage extends BaseController {
                     }
                 }
                 Collections.reverse(messages);
-                AndroidUtilities.runOnUIThread(() -> getNotificationsController().processLoadedUnreadMessages(pushDialogs, messages, pushMessages, users, chats, encryptedChats));
+
+                usersToLoad.clear();
+                chatsToLoad.clear();
+                cursor = database.queryFinalized("SELECT uid, sid, date, expire_date, localName, flags FROM story_pushes");
+                HashMap<Long, NotificationsController.StoryNotification> storyPushes = new HashMap<>();
+                while (cursor.next()) {
+                    long dialogId = cursor.longValue(0);
+                    if (dialogId >= 0) {
+                        if (!usersToLoad.contains(dialogId)) {
+                            usersToLoad.add(dialogId);
+                        }
+                    } else {
+                        if (!chatsToLoad.contains(dialogId)) {
+                            chatsToLoad.add(dialogId);
+                        }
+                    }
+                    int id = cursor.intValue(1);
+                    long date = cursor.longValue(2);
+                    long expire_date = cursor.longValue(3);
+                    String localName = cursor.stringValue(4);
+                    int flags = cursor.intValue(5);
+                    NotificationsController.StoryNotification notification = storyPushes.get(dialogId);
+                    if (notification != null) {
+                        notification.dateByIds.put(id, new Pair<>(date, expire_date));
+                        notification.date = notification.getLeastDate();
+                        notification.hidden |= (flags & 1) != 0;
+                        if (!TextUtils.isEmpty(localName)) {
+                            notification.localName = localName;
+                        }
+                    } else {
+                        notification = new NotificationsController.StoryNotification(dialogId, localName, id, date, expire_date);
+                        notification.hidden = (flags & 1) != 0;
+                        storyPushes.put(dialogId, notification);
+                    }
+                }
+                cursor.dispose();
+                cursor = null;
+
+                if (!usersToLoad.isEmpty()) {
+                    getUsersInternal(TextUtils.join(",", usersToLoad), users);
+                }
+
+                if (!chatsToLoad.isEmpty()) {
+                    getChatsInternal(TextUtils.join(",", chatsToLoad), chats);
+                }
+
+                AndroidUtilities.runOnUIThread(() -> getNotificationsController().processLoadedUnreadMessages(pushDialogs, messages, pushMessages, users, chats, encryptedChats, storyPushes.values()));
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -3334,7 +3665,7 @@ public class MessagesStorage extends BaseController {
                 state = null;
                 database.commitTransaction();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -3351,7 +3682,7 @@ public class MessagesStorage extends BaseController {
             try {
                 database.executeFast("DELETE FROM wallpapers2 WHERE uid = " + id).stepThis().dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -3374,7 +3705,7 @@ public class MessagesStorage extends BaseController {
                 }
                 AndroidUtilities.runOnUIThread(() -> NotificationCenter.getGlobalInstance().postNotificationName(NotificationCenter.wallpapersDidLoad, wallPapers));
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -3409,7 +3740,7 @@ public class MessagesStorage extends BaseController {
                     state.dispose();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -3443,7 +3774,7 @@ public class MessagesStorage extends BaseController {
                         }
                     }
                 } catch (Exception e) {
-                    FileLog.e(e);
+                    checkSQLException(e);
                 }
                 cursor.dispose();
                 cursor = null;
@@ -3459,7 +3790,7 @@ public class MessagesStorage extends BaseController {
                     AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.messagesDeleted, mids, DialogObject.isChatDialog(dialogId) ? -dialogId : 0, false));
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -3582,7 +3913,7 @@ public class MessagesStorage extends BaseController {
                             }
                         }
                     } catch (Exception e) {
-                        FileLog.e(e);
+                        checkSQLException(e);
                     }
                     cursor.dispose();
                     cursor = null;
@@ -3626,7 +3957,7 @@ public class MessagesStorage extends BaseController {
                                 }
                             }
                         } catch (Exception e) {
-                            FileLog.e(e);
+                            checkSQLException(e);
                         }
                         cursor2.dispose();
                         cursor2 = null;
@@ -3634,10 +3965,11 @@ public class MessagesStorage extends BaseController {
                         database.executeFast("DELETE FROM messages_v2 WHERE uid = " + did + " AND mid != " + last_mid_i + " AND mid != " + last_mid).stepThis().dispose();
                         database.executeFast("DELETE FROM messages_holes WHERE uid = " + did).stepThis().dispose();
                         database.executeFast("DELETE FROM bot_keyboard WHERE uid = " + did).stepThis().dispose();
+                        database.executeFast("DELETE FROM bot_keyboard_topics WHERE uid = " + did).stepThis().dispose();
                         database.executeFast("DELETE FROM media_counts_v2 WHERE uid = " + did).stepThis().dispose();
                         database.executeFast("DELETE FROM media_v4 WHERE uid = " + did).stepThis().dispose();
                         database.executeFast("DELETE FROM media_holes_v2 WHERE uid = " + did).stepThis().dispose();
-                        getMediaDataController().clearBotKeyboard(did, null);
+                        getMediaDataController().clearBotKeyboard(did);
 
                         state5 = database.executeFast("REPLACE INTO messages_holes VALUES(?, ?, ?)");
                         state6 = database.executeFast("REPLACE INTO media_holes_v2 VALUES(?, ?, ?, ?)");
@@ -3658,16 +3990,17 @@ public class MessagesStorage extends BaseController {
                 database.executeFast("UPDATE dialogs SET unread_count = 0, unread_count_i = 0 WHERE did = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM messages_v2 WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM bot_keyboard WHERE uid = " + did).stepThis().dispose();
+                database.executeFast("DELETE FROM bot_keyboard_topics WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM media_counts_v2 WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM media_v4 WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM messages_holes WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM media_holes_v2 WHERE uid = " + did).stepThis().dispose();
-                getMediaDataController().clearBotKeyboard(did, null);
+                getMediaDataController().clearBotKeyboard(did);
                 AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.needReloadRecentDialogsSearch));
                 resetAllUnreadCounters(false);
                 updateWidgets(did);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -3690,7 +4023,7 @@ public class MessagesStorage extends BaseController {
             try {
                 database.executeFast("DELETE FROM media_counts_v2 WHERE uid = " + did).stepThis().dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -3727,7 +4060,7 @@ public class MessagesStorage extends BaseController {
 
                 Utilities.stageQueue.postRunnable(() -> getMessagesController().processLoadedUserPhotos(res, messages, did, count, maxId, true, classGuid));
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -3741,7 +4074,7 @@ public class MessagesStorage extends BaseController {
             try {
                 database.executeFast("DELETE FROM user_photos WHERE uid = " + dialogId).stepThis().dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -3751,7 +4084,7 @@ public class MessagesStorage extends BaseController {
             try {
                 database.executeFast("DELETE FROM user_photos WHERE uid = " + dialogId + " AND id = " + pid).stepThis().dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -3811,6 +4144,7 @@ public class MessagesStorage extends BaseController {
                 database.executeFast("DELETE FROM messages_v2 WHERE uid IN " + ids).stepThis().dispose();
                 database.executeFast("DELETE FROM polls_v2 WHERE 1").stepThis().dispose();
                 database.executeFast("DELETE FROM bot_keyboard WHERE uid IN " + ids).stepThis().dispose();
+                database.executeFast("DELETE FROM bot_keyboard_topics WHERE uid IN " + ids).stepThis().dispose();
                 database.executeFast("DELETE FROM media_v4 WHERE uid IN " + ids).stepThis().dispose();
                 database.executeFast("DELETE FROM messages_holes WHERE uid IN " + ids).stepThis().dispose();
                 database.executeFast("DELETE FROM media_holes_v2 WHERE uid IN " + ids).stepThis().dispose();
@@ -3904,7 +4238,7 @@ public class MessagesStorage extends BaseController {
                 getUserConfig().saveConfig(false);
                 getMessagesController().completeDialogsReset(dialogsRes, messagesCount, seq, newPts, date, qts, new_dialogs_dict, new_dialogMessage, lastMessage);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -3940,12 +4274,12 @@ public class MessagesStorage extends BaseController {
                 }
                 state.requery();
                 int size = photo.getObjectSize();
-                if (messages != null && messages.get(a) != null) {
+                if (messages != null && a < messages.size() && messages.get(a) != null) {
                     size += messages.get(a).getObjectSize();
                 }
                 NativeByteBuffer data = new NativeByteBuffer(size);
                 photo.serializeToStream(data);
-                if (messages != null && messages.get(a) != null) {
+                if (messages != null && a < messages.size() && messages.get(a) != null) {
                     messages.get(a).serializeToStream(data);
                 }
                 state.bindLong(1, did);
@@ -3957,7 +4291,7 @@ public class MessagesStorage extends BaseController {
             state.dispose();
             state = null;
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (state != null) {
                 state.dispose();
@@ -3993,7 +4327,7 @@ public class MessagesStorage extends BaseController {
                 res.photos.add(0, photoToAdd);
                 putDialogPhotosInternal(did, res, messages);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -4045,10 +4379,11 @@ public class MessagesStorage extends BaseController {
                 cursor = null;
                 deleteFromDownloadQueue(idsToDelete, true);
                 if (!messages.isEmpty()) {
-                    state = database.executeFast("REPLACE INTO messages_v2 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, ?, ?)");
+                    state = database.executeFast("REPLACE INTO messages_v2 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)");
                     for (int a = 0; a < messages.size(); a++) {
                         TLRPC.Message message = messages.get(a);
 
+                        MessageObject.normalizeFlags(message);
                         NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
                         message.serializeToStream(data);
 
@@ -4066,39 +4401,52 @@ public class MessagesStorage extends BaseController {
                         } else {
                             state.bindInteger(9, getMessageMediaType(message));
                         }
+                        NativeByteBuffer storyData = null;
+                        if (message.replyStory != null) {
+                            storyData = new NativeByteBuffer(message.replyStory.getObjectSize());
+                            message.replyStory.serializeToStream(storyData);
+                            state.bindByteBuffer(10, storyData);
+                        } else {
+                            state.bindNull(10);
+                        }
                         int flags = 0;
                         if (message.stickerVerified == 0) {
                             flags |= 1;
                         } else if (message.stickerVerified == 2) {
                             flags |= 2;
                         }
-                        state.bindInteger(10, flags);
-                        state.bindInteger(11, message.mentioned ? 1 : 0);
-                        state.bindInteger(12, message.forwards);
+                        state.bindInteger(11, flags);
+                        state.bindInteger(12, message.mentioned ? 1 : 0);
+                        state.bindInteger(13, message.forwards);
                         NativeByteBuffer repliesData = null;
                         if (message.replies != null) {
                             repliesData = new NativeByteBuffer(message.replies.getObjectSize());
                             message.replies.serializeToStream(repliesData);
-                            state.bindByteBuffer(13, repliesData);
+                            state.bindByteBuffer(14, repliesData);
                         } else {
-                            state.bindNull(13);
+                            state.bindNull(14);
                         }
                         if (message.reply_to != null) {
-                            state.bindInteger(14, message.reply_to.reply_to_top_id != 0 ? message.reply_to.reply_to_top_id : message.reply_to.reply_to_msg_id);
+                            state.bindInteger(15, message.reply_to.reply_to_top_id != 0 ? message.reply_to.reply_to_top_id : message.reply_to.reply_to_msg_id);
                         } else {
-                            state.bindInteger(14, 0);
+                            state.bindInteger(15, 0);
                         }
-                        state.bindLong(15, MessageObject.getChannelId(message));
+                        state.bindLong(16, MessageObject.getChannelId(message));
                         NativeByteBuffer customParams = MessageCustomParamsHelper.writeLocalParams(message);
                         if (customParams != null) {
                             state.bindByteBuffer(16, customParams);
                         } else {
-                            state.bindNull(16);
+                            state.bindNull(17);
                         }
                         if ((message.flags & 131072) != 0) {
-                            state.bindLong(17, message.grouped_id);
+                            state.bindLong(18, message.grouped_id);
                         } else {
-                            state.bindNull(17);
+                            state.bindNull(18);
+                        }
+                        if (message.reply_to != null) {
+                            state.bindInteger(19, message.reply_to.story_id);
+                        } else {
+                            state.bindInteger(19, 0);
                         }
                         state.step();
                         data.reuse();
@@ -4107,6 +4455,9 @@ public class MessagesStorage extends BaseController {
                         }
                         if (customParams != null) {
                             customParams.reuse();
+                        }
+                        if (storyData != null) {
+                            storyData.reuse();
                         }
                     }
                     state.dispose();
@@ -4120,7 +4471,7 @@ public class MessagesStorage extends BaseController {
                 AndroidUtilities.runOnUIThread(() -> getFileLoader().cancelLoadFiles(namesToDelete));
                 getFileLoader().deleteFiles(filesToDelete, 0);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -4185,6 +4536,7 @@ public class MessagesStorage extends BaseController {
                                                 MessageObject.updatePollResults(media, results);
                                             }
 
+                                            MessageObject.normalizeFlags(message);
                                             data = new NativeByteBuffer(message.getObjectSize());
                                             message.serializeToStream(data);
                                             currentState.requery();
@@ -4208,7 +4560,7 @@ public class MessagesStorage extends BaseController {
                     database.commitTransaction();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -4242,6 +4594,7 @@ public class MessagesStorage extends BaseController {
                                 } else {
                                     state = database.executeFast("UPDATE messages_topics SET data = ? WHERE mid = ? AND uid = ?");
                                 }
+                                MessageObject.normalizeFlags(message);
                                 NativeByteBuffer data2 = new NativeByteBuffer(message.getObjectSize());
                                 message.serializeToStream(data2);
                                 state.requery();
@@ -4261,7 +4614,7 @@ public class MessagesStorage extends BaseController {
                 }
                 database.commitTransaction();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -4309,7 +4662,7 @@ public class MessagesStorage extends BaseController {
                 }
                 database.commitTransaction();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -4349,7 +4702,7 @@ public class MessagesStorage extends BaseController {
                     nativeByteBuffer.reuse();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -4398,7 +4751,7 @@ public class MessagesStorage extends BaseController {
                     }
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -4442,7 +4795,7 @@ public class MessagesStorage extends BaseController {
                 }
                 database.commitTransaction();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -4476,7 +4829,7 @@ public class MessagesStorage extends BaseController {
                 cursor = null;
             }
         } catch (SQLiteException e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (cursor != null) {
                 cursor.dispose();
@@ -4537,7 +4890,7 @@ public class MessagesStorage extends BaseController {
                 cursor = null;
                 getMessagesController().processLoadedDeleteTask(date, newTask, newTaskMedia);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -4595,7 +4948,7 @@ public class MessagesStorage extends BaseController {
                 }
 
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -4609,7 +4962,7 @@ public class MessagesStorage extends BaseController {
             try {
                 database.executeFast(String.format(Locale.US, "UPDATE messages_v2 SET mention = 1, read_state = read_state & ~2 WHERE mid = %d AND uid = %d", mid, dialogId)).stepThis().dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -4649,7 +5002,7 @@ public class MessagesStorage extends BaseController {
                     getMessagesController().getTopicsController().processUpdate(Collections.singletonList(topicUpdate));
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -4694,7 +5047,7 @@ public class MessagesStorage extends BaseController {
                 database.executeFast(String.format(Locale.US, "UPDATE messages_v2 SET ttl = 0 WHERE mid = %d AND uid = %d", messageId, dialogId)).stepThis().dispose();
                 getMessagesController().didAddedNewTask(minDate, dialogId, messages);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -4773,7 +5126,7 @@ public class MessagesStorage extends BaseController {
                     getMessagesController().didAddedNewTask(minDate, dialogId, messages);
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -4885,7 +5238,8 @@ public class MessagesStorage extends BaseController {
             for (int a = 0, N = users.size(); a < N; a++) {
                 TLRPC.User user = users.get(a);
                 boolean muted = getMessagesController().isDialogMuted(user.id, 0);
-                int idx1 = dialogsByFolders.get(user.id);
+                Integer folderId = dialogsByFolders.get(user.id);
+                int idx1 = folderId == null || folderId < 0 || folderId > 1 ? 0 : folderId;
                 int idx2 = muted ? 1 : 0;
                 if (muted) {
                     mutedDialogs.put(user.id, true);
@@ -4921,7 +5275,8 @@ public class MessagesStorage extends BaseController {
                     }
                     long did = DialogObject.makeEncryptedDialogId(encryptedChat.id);
                     boolean muted = getMessagesController().isDialogMuted(did, 0);
-                    int idx1 = dialogsByFolders.get(did);
+                    Integer folderId = dialogsByFolders.get(did);
+                    int idx1 = folderId == null || folderId < 0 || folderId > 1 ? 0 : folderId;
                     int idx2 = muted ? 1 : 0;
                     if (muted) {
                         mutedDialogs.put(user.id, true);
@@ -4949,7 +5304,8 @@ public class MessagesStorage extends BaseController {
                 boolean muted = getMessagesController().isDialogMuted(-chat.id, 0, chat);
                 boolean hasUnread = dialogsWithUnread.indexOfKey(-chat.id) >= 0;
                 boolean hasMention = dialogsWithMentions.indexOfKey(-chat.id) >= 0;
-                int idx1 = dialogsByFolders.get(-chat.id);
+                Integer folderId = dialogsByFolders.get(-chat.id);
+                int idx1 = folderId == null || folderId < 0 || folderId > 1 ? 0 : folderId;
                 int idx2 = muted ? 1 : 0;
                 if (muted) {
                     mutedDialogs.put(-chat.id, true);
@@ -5594,7 +5950,7 @@ public class MessagesStorage extends BaseController {
                 getMessagesController().reloadMentionsCountForChannels(channelMentionsToReload);
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
     }
 
@@ -5656,7 +6012,7 @@ public class MessagesStorage extends BaseController {
                     TLRPC.ChatFull finalInfo = info;
                     AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.chatInfoDidLoad, finalInfo, 0, false, false));
 
-                    SQLitePreparedStatement state = database.executeFast("REPLACE INTO chat_settings_v2 VALUES(?, ?, ?, ?, ?, ?)");
+                    SQLitePreparedStatement state = database.executeFast("REPLACE INTO chat_settings_v2 VALUES(?, ?, ?, ?, ?, ?, ?)");
                     NativeByteBuffer data = new NativeByteBuffer(info.getObjectSize());
                     info.serializeToStream(data);
                     state.bindLong(1, info.id);
@@ -5665,12 +6021,13 @@ public class MessagesStorage extends BaseController {
                     state.bindInteger(4, info.online_count);
                     state.bindLong(5, info.inviterId);
                     state.bindInteger(6, info.invitesCount);
+                    state.bindInteger(7, info.participants_count);
                     state.step();
                     state.dispose();
                     data.reuse();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -5699,7 +6056,7 @@ public class MessagesStorage extends BaseController {
                 cursor = null;
                 getMessagesController().processLoadedChannelAdmins(ids, chatId, true);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -5731,7 +6088,7 @@ public class MessagesStorage extends BaseController {
                 state = null;
                 database.commitTransaction();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -5771,7 +6128,7 @@ public class MessagesStorage extends BaseController {
                 database.commitTransaction();
                 loadChatInfo(channelId, true, null, false, true);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -5807,7 +6164,7 @@ public class MessagesStorage extends BaseController {
                 state = null;
                 data.reuse();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state !=  null) {
                     state.dispose();
@@ -5840,13 +6197,13 @@ public class MessagesStorage extends BaseController {
                             data.reuse();
                         }
                     } catch (Exception e) {
-                        FileLog.e(e);
+                        checkSQLException(e);
                     }
                 }
                 cursor.dispose();
                 cursor = null;
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 requestDelegate.run(result, null);
                 if (cursor != null) {
@@ -5874,7 +6231,7 @@ public class MessagesStorage extends BaseController {
             cursor.dispose();
             cursor = null;
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return arrayList;
     }
@@ -5938,7 +6295,7 @@ public class MessagesStorage extends BaseController {
                     }
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 getMessagesController().processUserInfo(user, info, true, force, classGuid, pinnedMessages, pinnedMessagesMap, totalPinnedCount, pinnedEndReached);
                 if (cursor != null) {
@@ -5950,11 +6307,12 @@ public class MessagesStorage extends BaseController {
 
     public void updateUserInfo(TLRPC.UserFull info, boolean ifExist) {
         storageQueue.postRunnable(() -> {
+            long id = info.user != null ? info.user.id : info.id;
             SQLiteCursor cursor = null;
             SQLitePreparedStatement state = null;
             try {
                 if (ifExist) {
-                    cursor = database.queryFinalized("SELECT uid FROM user_settings WHERE uid = " + info.user.id);
+                    cursor = database.queryFinalized("SELECT uid FROM user_settings WHERE uid = " + id);
                     boolean exist = cursor.next();
                     cursor.dispose();
                     cursor = null;
@@ -5965,7 +6323,7 @@ public class MessagesStorage extends BaseController {
                 state = database.executeFast("REPLACE INTO user_settings VALUES(?, ?, ?)");
                 NativeByteBuffer data = new NativeByteBuffer(info.getObjectSize());
                 info.serializeToStream(data);
-                state.bindLong(1, info.user.id);
+                state.bindLong(1, id);
                 state.bindByteBuffer(2, data);
                 state.bindInteger(3, info.pinned_msg_id);
                 state.step();
@@ -5975,7 +6333,7 @@ public class MessagesStorage extends BaseController {
                 if ((info.flags & 2048) != 0) {
                     state = database.executeFast("UPDATE dialogs SET folder_id = ? WHERE did = ?");
                     state.bindInteger(1, info.folder_id);
-                    state.bindLong(2, info.user.id);
+                    state.bindLong(2, id);
                     state.step();
                     state.dispose();
                     state = null;
@@ -5984,13 +6342,13 @@ public class MessagesStorage extends BaseController {
                 if ((info.flags & 16384) != 0) {
                     state = database.executeFast("UPDATE dialogs SET ttl_period = ? WHERE did = ?");
                     state.bindInteger(1, info.ttl_period);
-                    state.bindLong(2, info.user.id);
+                    state.bindLong(2, id);
                     state.step();
                     state.dispose();
                     state = null;
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -6013,7 +6371,7 @@ public class MessagesStorage extends BaseController {
                 state.step();
                 state.dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -6034,7 +6392,7 @@ public class MessagesStorage extends BaseController {
                 state.dispose();
                 state = null;
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -6071,7 +6429,7 @@ public class MessagesStorage extends BaseController {
                     info.invitesCount = links;
                 }
 
-                state = database.executeFast("REPLACE INTO chat_settings_v2 VALUES(?, ?, ?, ?, ?, ?)");
+                state = database.executeFast("REPLACE INTO chat_settings_v2 VALUES(?, ?, ?, ?, ?, ?, ?)");
                 NativeByteBuffer data = new NativeByteBuffer(info.getObjectSize());
                 info.serializeToStream(data);
                 state.bindLong(1, info.id);
@@ -6080,6 +6438,7 @@ public class MessagesStorage extends BaseController {
                 state.bindInteger(4, info.online_count);
                 state.bindLong(5, info.inviterId);
                 state.bindInteger(6, info.invitesCount);
+                state.bindInteger(7, info.participants_count);
                 state.step();
                 state.dispose();
                 state = null;
@@ -6121,7 +6480,7 @@ public class MessagesStorage extends BaseController {
                 state.dispose();
                 state = null;
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -6145,7 +6504,7 @@ public class MessagesStorage extends BaseController {
                 state.dispose();
                 state = null;
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -6293,7 +6652,7 @@ public class MessagesStorage extends BaseController {
                     AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.didLoadPinnedMessages, dialogId, ids, false, null, messages, maxId, newCount, endReached));
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -6370,7 +6729,7 @@ public class MessagesStorage extends BaseController {
                     TLRPC.ChatFull finalInfo = info;
                     AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.chatInfoDidLoad, finalInfo, 0, false, false));
 
-                    SQLitePreparedStatement state = database.executeFast("REPLACE INTO chat_settings_v2 VALUES(?, ?, ?, ?, ?, ?)");
+                    SQLitePreparedStatement state = database.executeFast("REPLACE INTO chat_settings_v2 VALUES(?, ?, ?, ?, ?, ?, ?)");
                     NativeByteBuffer data = new NativeByteBuffer(info.getObjectSize());
                     info.serializeToStream(data);
                     state.bindLong(1, chatId);
@@ -6379,12 +6738,13 @@ public class MessagesStorage extends BaseController {
                     state.bindInteger(4, info.online_count);
                     state.bindLong(5, info.inviterId);
                     state.bindInteger(6, info.invitesCount);
+                    state.bindInteger(7, info.participants_count);
                     state.step();
                     state.dispose();
                     data.reuse();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -6414,7 +6774,7 @@ public class MessagesStorage extends BaseController {
                 result[0] = info instanceof TLRPC.TL_channelFull && info.migrated_from_chat_id != 0;
                 countDownLatch.countDown();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -6425,7 +6785,7 @@ public class MessagesStorage extends BaseController {
         try {
             countDownLatch.await();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return result[0];
     }
@@ -6448,7 +6808,7 @@ public class MessagesStorage extends BaseController {
                 cursor.dispose();
                 cursor = null;
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -6459,7 +6819,7 @@ public class MessagesStorage extends BaseController {
         try {
             countDownLatch.await();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return ref.get();
     }
@@ -6486,7 +6846,7 @@ public class MessagesStorage extends BaseController {
                 cursor.dispose();
                 cursor = null;
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -6497,9 +6857,41 @@ public class MessagesStorage extends BaseController {
         try {
             countDownLatch.await();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return result[0];
+    }
+
+    public HashMap<Long, Integer> getSmallGroupsParticipantsCount() {
+        HashMap<Long, Integer> result = new HashMap<>();
+
+        SQLiteCursor cursor = null;
+        try {
+            cursor = database.queryFinalized("SELECT uid, info, participants_count FROM chat_settings_v2 WHERE participants_count > 1");
+            while (cursor.next()) {
+                TLRPC.ChatFull info = null;
+                long id = cursor.longValue(0);
+                NativeByteBuffer data = cursor.byteBufferValue(1);
+                int participants_count = cursor.intValue(2);
+                if (data != null) {
+                    info = TLRPC.ChatFull.TLdeserialize(data, data.readInt32(false), false);
+                    data.reuse();
+                    // legacy groups already contain participants_count in TLRPC.Chat and not need to load chatfull
+                    if (info instanceof TLRPC.TL_channelFull) {
+                        result.put(id, participants_count);
+                    }
+                }
+            }
+            cursor.dispose();
+            cursor = null;
+        } catch (Exception e) {
+            checkSQLException(e);
+        } finally {
+            if (cursor != null) {
+                cursor.dispose();
+            }
+        }
+        return result;
     }
 
     private TLRPC.ChatFull loadChatInfoInternal(long chatId, boolean isChannel, boolean force, boolean byChannelUsers, int fromMessageId) {
@@ -6574,7 +6966,7 @@ public class MessagesStorage extends BaseController {
                             info.participants.participants.add(chatChannelParticipant);
                         }
                     } catch (Exception e) {
-                        FileLog.e(e);
+                        checkSQLException(e);
                     }
                 }
                 cursor.dispose();
@@ -6628,7 +7020,7 @@ public class MessagesStorage extends BaseController {
                 }
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (cursor != null) {
                 cursor.dispose();
@@ -6659,6 +7051,11 @@ public class MessagesStorage extends BaseController {
         }
         return result[0];
     }
+
+    public TLRPC.ChatFull loadChatInfoInQueue(long chatId, boolean isChannel, boolean force, boolean byChannelUsers, int fromMessageId) {
+        return loadChatInfoInternal(chatId, isChannel, force, byChannelUsers, fromMessageId);
+    }
+
 
     public void processPendingRead(long dialogId, int maxPositiveId, int maxNegativeId, int scheduledCount) {
         int maxDate = lastSavedDate;
@@ -6760,7 +7157,7 @@ public class MessagesStorage extends BaseController {
                 }
                 updateWidgets(dialogId);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -6799,7 +7196,7 @@ public class MessagesStorage extends BaseController {
                 state = null;
                 database.commitTransaction();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -6820,7 +7217,7 @@ public class MessagesStorage extends BaseController {
                 String ids = TextUtils.join(",", uids);
                 database.executeFast("DELETE FROM contacts WHERE uid IN(" + ids + ")").stepThis().dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -6838,7 +7235,7 @@ public class MessagesStorage extends BaseController {
                     database.executeFast(String.format(Locale.US, "UPDATE user_phones_v7 SET deleted = 1 WHERE sphone IN(%s)", deletes)).stepThis().dispose();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -6892,7 +7289,7 @@ public class MessagesStorage extends BaseController {
                     getCachedPhoneBook(false);
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -6967,7 +7364,7 @@ public class MessagesStorage extends BaseController {
                     return;
                 }
             } catch (Throwable e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -6990,7 +7387,7 @@ public class MessagesStorage extends BaseController {
                     }
                 }
             } catch (Throwable e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -7044,7 +7441,7 @@ public class MessagesStorage extends BaseController {
                 cursor = null;
             } catch (Exception e) {
                 contactHashMap.clear();
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -7082,7 +7479,7 @@ public class MessagesStorage extends BaseController {
             } catch (Exception e) {
                 contacts.clear();
                 users.clear();
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -7222,7 +7619,7 @@ public class MessagesStorage extends BaseController {
 
                 getSendMessagesHelper().processUnsentMessages(messages, scheduledMessages, users, chats, encryptedChats);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -7242,7 +7639,7 @@ public class MessagesStorage extends BaseController {
                     result[0] = true;
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -7253,7 +7650,7 @@ public class MessagesStorage extends BaseController {
         try {
             countDownLatch.await();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return result[0];
     }
@@ -7269,7 +7666,7 @@ public class MessagesStorage extends BaseController {
                     result[0] = true;
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -7280,7 +7677,7 @@ public class MessagesStorage extends BaseController {
         try {
             countDownLatch.await();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return result[0];
     }
@@ -7303,7 +7700,7 @@ public class MessagesStorage extends BaseController {
                 cursor.dispose();
                 AndroidUtilities.runOnUIThread(() -> callback.run(result));
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -7326,14 +7723,14 @@ public class MessagesStorage extends BaseController {
                 cursor.dispose();
                 AndroidUtilities.runOnUIThread(() -> callback.run(result));
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 cursor.dispose();
             }
         });
     }
 
-    public Runnable getMessagesInternal(long dialogId, long mergeDialogId, int count, int max_id, int offset_date, int minDate, int classGuid, int load_type, boolean scheduled, int threadMessageId, int loadIndex, boolean processMessages, boolean isTopic) {
+    public Runnable getMessagesInternal(long dialogId, long mergeDialogId, int count, int max_id, int offset_date, int minDate, int classGuid, int load_type, boolean scheduled, int threadMessageId, int loadIndex, boolean processMessages, boolean isTopic, MessageLoaderLogger loaderLogger) {
         TLRPC.TL_messages_messages res = new TLRPC.TL_messages_messages();
         long currentUserId = getUserConfig().clientUserId;
         int count_unread = 0;
@@ -7364,9 +7761,9 @@ public class MessagesStorage extends BaseController {
             ArrayList<Long> replyMessageRandomIds = new ArrayList<>();
             String messageSelect;
             if (threadMessageId != 0) {
-                messageSelect = "SELECT m.read_state, m.data, m.send_state, m.mid, m.date, r.random_id, m.replydata, m.media, m.ttl, m.mention, m.imp, m.forwards, m.replies_data, m.custom_params FROM messages_topics as m LEFT JOIN randoms_v2 as r ON r.mid = m.mid AND r.uid = m.uid";
+                messageSelect = "SELECT m.read_state, m.data, m.send_state, m.mid, m.date, r.random_id, m.replydata, m.media, m.ttl, m.mention, m.imp, m.forwards, m.replies_data, m.custom_params, m.reply_to_story_id FROM messages_topics as m LEFT JOIN randoms_v2 as r ON r.mid = m.mid AND r.uid = m.uid";
             } else {
-                messageSelect = "SELECT m.read_state, m.data, m.send_state, m.mid, m.date, r.random_id, m.replydata, m.media, m.ttl, m.mention, m.imp, m.forwards, m.replies_data, m.custom_params FROM messages_v2 as m LEFT JOIN randoms_v2 as r ON r.mid = m.mid AND r.uid = m.uid";
+                messageSelect = "SELECT m.read_state, m.data, m.send_state, m.mid, m.date, r.random_id, m.replydata, m.media, m.ttl, m.mention, m.imp, m.forwards, m.replies_data, m.custom_params, m.reply_to_story_id FROM messages_v2 as m LEFT JOIN randoms_v2 as r ON r.mid = m.mid AND r.uid = m.uid";
             }
             if (scheduled) {
                 isEnd = true;
@@ -7846,6 +8243,7 @@ public class MessagesStorage extends BaseController {
                         if (cursor.next()) {
                             holeMessageId = cursor.intValue(0);
                         }
+
                         cursor.dispose();
                         cursor = null;
                         if (threadMessageId != 0) {
@@ -8020,15 +8418,25 @@ public class MessagesStorage extends BaseController {
 
                             addUsersAndChatsFromMessage(message, usersToLoad, chatsToLoad, animatedEmojiToLoad);
 
-                            if (message.reply_to != null && (message.reply_to.reply_to_msg_id != 0 || message.reply_to.reply_to_random_id != 0)) {
-                                if (!cursor.isNull(6)) {
-                                    data = cursor.byteBufferValue(6);
-                                    if (data != null) {
-                                        message.replyMessage = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
-                                        message.replyMessage.readAttachPath(data, currentUserId);
-                                        data.reuse();
-                                        if (message.replyMessage != null) {
-                                            addUsersAndChatsFromMessage(message.replyMessage, usersToLoad, chatsToLoad, animatedEmojiToLoad);
+                            if (message.reply_to != null) {
+                                if ((message.reply_to.reply_to_msg_id != 0 || message.reply_to.reply_to_random_id != 0)) {
+                                    if (!cursor.isNull(6)) {
+                                        data = cursor.byteBufferValue(6);
+                                        if (data != null) {
+                                            message.replyMessage = TLRPC.Message.TLdeserialize(data, data.readInt32(false), false);
+                                            message.replyMessage.readAttachPath(data, currentUserId);
+                                            data.reuse();
+                                            if (message.replyMessage != null) {
+                                                addUsersAndChatsFromMessage(message.replyMessage, usersToLoad, chatsToLoad, animatedEmojiToLoad);
+                                            }
+                                        }
+                                    }
+                                } else if (message.reply_to.story_id != 0) {
+                                    if (!cursor.isNull(6)) {
+                                        data = cursor.byteBufferValue(6);
+                                        if (data != null) {
+                                            message.replyStory = TLRPC.StoryItem.TLdeserialize(data, data.readInt32(false), false);
+                                            data.reuse();
                                         }
                                     }
                                 }
@@ -8059,7 +8467,7 @@ public class MessagesStorage extends BaseController {
                                     }
                                     cursor2.dispose();
                                 } catch (Exception e) {
-                                    FileLog.e(e);
+                                    checkSQLException(e);
                                 }
                             }
                         }
@@ -8187,7 +8595,7 @@ public class MessagesStorage extends BaseController {
             res.chats.clear();
             res.users.clear();
             res.animatedEmoji = null;
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (cursor != null) {
                 cursor.dispose();
@@ -8216,7 +8624,7 @@ public class MessagesStorage extends BaseController {
             };
         } else {*/
         int finalMessagesCount = scheduled ? res.messages.size() : messagesCount;
-        return () -> getMessagesController().processLoadedMessages(res, finalMessagesCount, dialogId, mergeDialogId, countQueryFinal, maxIdOverrideFinal, offset_date, true, classGuid, minUnreadIdFinal, lastMessageIdFinal, countUnreadFinal, maxUnreadDateFinal, load_type, isEndFinal, scheduled ? 1 : 0, threadMessageId, loadIndex, queryFromServerFinal, mentionsUnreadFinal, processMessages, isTopic);
+        return () -> getMessagesController().processLoadedMessages(res, finalMessagesCount, dialogId, mergeDialogId, countQueryFinal, maxIdOverrideFinal, offset_date, true, classGuid, minUnreadIdFinal, lastMessageIdFinal, countUnreadFinal, maxUnreadDateFinal, load_type, isEndFinal, scheduled ? 1 : 0, threadMessageId, loadIndex, queryFromServerFinal, mentionsUnreadFinal, processMessages, isTopic, loaderLogger);
         //}
     }
 
@@ -8232,7 +8640,7 @@ public class MessagesStorage extends BaseController {
                         documents.add(document);
                     }
                 } catch (Exception e) {
-                    FileLog.e(e);
+                    checkSQLException(e);
                 }
                 if (byteBuffer != null) {
                     byteBuffer.reuse();
@@ -8247,19 +8655,19 @@ public class MessagesStorage extends BaseController {
         }
     }
 
-    public void getMessages(long dialogId, long mergeDialogId, boolean loadInfo, int count, int max_id, int offset_date, int minDate, int classGuid, int load_type, boolean scheduled, int replyMessageId, int loadIndex, boolean processMessages, boolean isTopic) {
-        long startTime = System.currentTimeMillis();
+    public void getMessages(long dialogId, long mergeDialogId, boolean loadInfo, int count, int max_id, int offset_date, int minDate, int classGuid, int load_type, boolean scheduled, int replyMessageId, int loadIndex, boolean processMessages, boolean isTopic, MessageLoaderLogger loaderLogger) {
         storageQueue.postRunnable(() -> {
-            /*if (loadInfo) {
-                if (lowerId < 0) {
-                    TLRPC.ChatFull info = loadChatInfoInternal(-lowerId, true, false, 0);
-                    if (info != null) {
-                        mergeDialogIdFinal = -info.migrated_from_chat_id;
-                    }
-                }
-            }*/
-            Runnable processMessagesRunnable = getMessagesInternal(dialogId, mergeDialogId, count, max_id, offset_date, minDate, classGuid, load_type, scheduled, replyMessageId, loadIndex, processMessages, isTopic);
+            if (loaderLogger != null) {
+                loaderLogger.logStorageQueuePost();
+            }
+            Runnable processMessagesRunnable = getMessagesInternal(dialogId, mergeDialogId, count, max_id, offset_date, minDate, classGuid, load_type, scheduled, replyMessageId, loadIndex, processMessages, isTopic, loaderLogger);
+            if (loaderLogger != null) {
+                loaderLogger.logStorageProccessing();
+            }
             Utilities.stageQueue.postRunnable(() -> {
+                if (loaderLogger != null) {
+                    loaderLogger.logStageQueuePost();
+                }
                 processMessagesRunnable.run();
             });
         });
@@ -8270,7 +8678,7 @@ public class MessagesStorage extends BaseController {
             try {
                 database.executeFast("DELETE FROM sent_files_v2 WHERE 1").stepThis().dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -8304,7 +8712,7 @@ public class MessagesStorage extends BaseController {
                     cursor.dispose();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 countDownLatch.countDown();
             }
@@ -8312,7 +8720,7 @@ public class MessagesStorage extends BaseController {
         try {
             countDownLatch.await();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return result[0] != null ? result : null;
     }
@@ -8339,7 +8747,7 @@ public class MessagesStorage extends BaseController {
             }
             cursor.dispose();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
     }
 
@@ -8368,7 +8776,7 @@ public class MessagesStorage extends BaseController {
                 state.dispose();
                 database.commitTransaction();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -8378,7 +8786,7 @@ public class MessagesStorage extends BaseController {
             try {
                 database.executeFast("DELETE FROM shortcut_widget WHERE id = " + widgetId).stepThis().dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -8452,7 +8860,7 @@ public class MessagesStorage extends BaseController {
                     }
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -8463,7 +8871,7 @@ public class MessagesStorage extends BaseController {
         try {
             countDownLatch.await();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
     }
 
@@ -8573,7 +8981,7 @@ public class MessagesStorage extends BaseController {
                     getUsersInternal(TextUtils.join(",", usersToLoad), users);
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -8584,7 +8992,7 @@ public class MessagesStorage extends BaseController {
         try {
             countDownLatch.await();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
     }
 
@@ -8622,7 +9030,7 @@ public class MessagesStorage extends BaseController {
                     data.reuse();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -8651,7 +9059,7 @@ public class MessagesStorage extends BaseController {
                     database.executeFast(String.format(Locale.US, "DELETE FROM messages_v2 WHERE mid IN (SELECT m.mid FROM messages_v2 as m LEFT JOIN messages_seq as s ON m.mid = s.mid WHERE m.uid = %d AND m.date = 0 AND m.mid < 0 AND s.seq_out <= %d) AND uid = %d", did, chat.in_seq_no, did)).stepThis().dispose();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -8672,7 +9080,7 @@ public class MessagesStorage extends BaseController {
                 state.bindInteger(2, chat.id);
                 state.step();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -8693,7 +9101,7 @@ public class MessagesStorage extends BaseController {
                 state.bindInteger(2, chat.id);
                 state.step();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -8757,7 +9165,7 @@ public class MessagesStorage extends BaseController {
                 data4.reuse();
                 data5.reuse();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -8777,7 +9185,7 @@ public class MessagesStorage extends BaseController {
                 }
 
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -8798,7 +9206,7 @@ public class MessagesStorage extends BaseController {
                 cursor = database.queryFinalized(String.format(Locale.US, "SELECT mid FROM messages_v2 WHERE uid = 777000 AND date = %d AND mid < 0 LIMIT 1", date));
                 result[0] = cursor.next();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -8809,7 +9217,7 @@ public class MessagesStorage extends BaseController {
         try {
             countDownLatch.await();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return result[0];
     }
@@ -8832,7 +9240,7 @@ public class MessagesStorage extends BaseController {
                     }
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 countDownLatch.countDown();
             }
@@ -8921,7 +9329,7 @@ public class MessagesStorage extends BaseController {
                     state = null;
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -8955,7 +9363,7 @@ public class MessagesStorage extends BaseController {
         return str.toString().toLowerCase();
     }
 
-    private void putUsersInternal(ArrayList<TLRPC.User> users) throws Exception {
+    private void putUsersInternal(List<TLRPC.User> users) throws Exception {
         if (users == null || users.isEmpty()) {
             return;
         }
@@ -8991,7 +9399,7 @@ public class MessagesStorage extends BaseController {
                             }
                         }
                     } catch (Exception e) {
-                        FileLog.e(e);
+                        checkSQLException(e);
                     }
                 }
                 cursor.dispose();
@@ -9056,7 +9464,7 @@ public class MessagesStorage extends BaseController {
                 state.dispose();
                 state = null;
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -9068,7 +9476,7 @@ public class MessagesStorage extends BaseController {
         });
     }
 
-    private void putChatsInternal(ArrayList<TLRPC.Chat> chats) throws Exception {
+    private void putChatsInternal(List<TLRPC.Chat> chats) throws Exception {
         if (chats == null || chats.isEmpty()) {
             return;
         }
@@ -9110,6 +9518,9 @@ public class MessagesStorage extends BaseController {
                                     oldChat.username = null;
                                     oldChat.flags = oldChat.flags & ~64;
                                 }
+                                if (chat.participants_count > 0) {
+                                    oldChat.participants_count = chat.participants_count;
+                                }
                                 chat = oldChat;
                             }
                         }
@@ -9138,15 +9549,6 @@ public class MessagesStorage extends BaseController {
         state.dispose();
     }
 
-    private int malformedCleanupCount = 0;
-    public void checkMalformed(Exception e) {
-        if (e != null && e.getMessage() != null && e.getMessage().contains("malformed") && malformedCleanupCount < 3) {
-            FileLog.e("detected database malformed error, cleaning up...");
-            malformedCleanupCount++;
-            cleanup(false);
-        }
-    }
-
     public void getUsersInternal(String usersToLoad, ArrayList<TLRPC.User> result) throws Exception {
         if (usersToLoad == null || usersToLoad.length() == 0 || result == null) {
             return;
@@ -9166,14 +9568,17 @@ public class MessagesStorage extends BaseController {
                     }
                 }
             } catch (Exception e) {
-                FileLog.e(e);
-                checkMalformed(e);
+                checkSQLException(e);
             }
         }
         cursor.dispose();
     }
 
     public void getChatsInternal(String chatsToLoad, ArrayList<TLRPC.Chat> result) throws Exception {
+        getChatsInternal(chatsToLoad, result, true);
+    }
+
+    public void getChatsInternal(String chatsToLoad, ArrayList<TLRPC.Chat> result, boolean parseFullData) throws Exception {
         if (chatsToLoad == null || chatsToLoad.length() == 0 || result == null) {
             return;
         }
@@ -9182,15 +9587,14 @@ public class MessagesStorage extends BaseController {
             try {
                 NativeByteBuffer data = cursor.byteBufferValue(0);
                 if (data != null) {
-                    TLRPC.Chat chat = TLRPC.Chat.TLdeserialize(data, data.readInt32(false), false);
+                    TLRPC.Chat chat = TLRPC.Chat.TLdeserialize(data, data.readInt32(false), false, parseFullData);
                     data.reuse();
                     if (chat != null) {
                         result.add(chat);
                     }
                 }
             } catch (Exception e) {
-                FileLog.e(e);
-                checkMalformed(e);
+                checkSQLException(e);
             }
         }
         cursor.dispose();
@@ -9236,13 +9640,13 @@ public class MessagesStorage extends BaseController {
                     }
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         }
         cursor.dispose();
     }
 
-    private void putUsersAndChatsInternal(ArrayList<TLRPC.User> users, ArrayList<TLRPC.Chat> chats, boolean withTransaction) {
+    private void putUsersAndChatsInternal(List<TLRPC.User> users, List<TLRPC.Chat> chats, boolean withTransaction) {
         try {
             if (withTransaction) {
                 database.beginTransaction();
@@ -9250,7 +9654,7 @@ public class MessagesStorage extends BaseController {
             putUsersInternal(users);
             putChatsInternal(chats);
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (database != null) {
                 database.commitTransaction();
@@ -9258,7 +9662,7 @@ public class MessagesStorage extends BaseController {
         }
     }
 
-    public void putUsersAndChats(ArrayList<TLRPC.User> users, ArrayList<TLRPC.Chat> chats, boolean withTransaction, boolean useQueue) {
+    public void putUsersAndChats(List<TLRPC.User> users, List<TLRPC.Chat> chats, boolean withTransaction, boolean useQueue) {
         if (users != null && users.isEmpty() && chats != null && chats.isEmpty()) {
             return;
         }
@@ -9288,7 +9692,7 @@ public class MessagesStorage extends BaseController {
                     database.executeFast(String.format(Locale.US, "DELETE FROM download_queue WHERE uid = %d AND type = %d", id, type)).stepThis().dispose();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -9321,7 +9725,7 @@ public class MessagesStorage extends BaseController {
             }
             AndroidUtilities.runOnUIThread(() -> getDownloadController().cancelDownloading(ids));
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (state != null) {
                 state.dispose();
@@ -9343,7 +9747,7 @@ public class MessagesStorage extends BaseController {
                     database.executeFast(String.format(Locale.US, "DELETE FROM download_queue WHERE type = %d", type)).stepThis().dispose();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -9379,7 +9783,7 @@ public class MessagesStorage extends BaseController {
 
                 AndroidUtilities.runOnUIThread(() -> getDownloadController().processDownloadObjects(type, objects));
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -9469,6 +9873,7 @@ public class MessagesStorage extends BaseController {
                 state2 = database.executeFast("UPDATE media_v4 SET data = ? WHERE mid = ? AND uid = ?");
                 for (int a = 0; a < messages.size(); a++) {
                     TLRPC.Message message = messages.get(a);
+                    MessageObject.normalizeFlags(message);
                     NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
                     message.serializeToStream(data);
 
@@ -9495,7 +9900,7 @@ public class MessagesStorage extends BaseController {
 
                 AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.didReceivedWebpages, messages));
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -9513,7 +9918,7 @@ public class MessagesStorage extends BaseController {
         });
     }
 
-    public void overwriteChannel(long channelId, TLRPC.TL_updates_channelDifferenceTooLong difference, int newDialogType) {
+    public void overwriteChannel(long channelId, TLRPC.TL_updates_channelDifferenceTooLong difference, int newDialogType, Runnable onDone) {
         storageQueue.postRunnable(() -> {
             SQLiteCursor cursor = null;
             try {
@@ -9536,6 +9941,7 @@ public class MessagesStorage extends BaseController {
                 database.executeFast("DELETE FROM chat_pinned_v2 WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM messages_v2 WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM bot_keyboard WHERE uid = " + did).stepThis().dispose();
+                database.executeFast("DELETE FROM bot_keyboard_topics WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("UPDATE media_counts_v2 SET old = 1 WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM media_v4 WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM messages_holes WHERE uid = " + did).stepThis().dispose();
@@ -9548,7 +9954,7 @@ public class MessagesStorage extends BaseController {
                 database.executeFast("DELETE FROM messages_topics WHERE uid = " + did).stepThis().dispose();
                 database.executeFast("DELETE FROM messages_holes_topics WHERE uid = " + did).stepThis().dispose();
 
-                getMediaDataController().clearBotKeyboard(did, null);
+                getMediaDataController().clearBotKeyboard(did);
 
                 TLRPC.TL_messages_dialogs dialogs = new TLRPC.TL_messages_dialogs();
                 dialogs.chats.addAll(difference.chats);
@@ -9576,11 +9982,14 @@ public class MessagesStorage extends BaseController {
                     getMessagesController().getTopicsController().reloadTopics(channelId);
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
                 }
+            }
+            if (onDone != null) {
+                onDone.run();
             }
         });
     }
@@ -9704,7 +10113,7 @@ public class MessagesStorage extends BaseController {
                 database.commitTransaction();
                 inTransaction = false;
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (inTransaction) {
                     if (database != null) {
@@ -9822,7 +10231,7 @@ public class MessagesStorage extends BaseController {
                 resetForumBadgeIfNeed(-chatId);
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (state != null) {
                 state.dispose();
@@ -9853,7 +10262,7 @@ public class MessagesStorage extends BaseController {
             updateFiltersReadCounter(dialogsToUpdate, null, true);
             getMessagesController().processDialogsUpdateRead(dialogsToUpdate, null);
         } catch (Throwable e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (cursor != null) {
                 cursor.dispose();
@@ -9910,7 +10319,7 @@ public class MessagesStorage extends BaseController {
                 state.dispose();
                 state = null;
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -9953,7 +10362,7 @@ public class MessagesStorage extends BaseController {
                 database.commitTransaction();
                 databaseInTransaction = false;
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (databaseInTransaction) {
                     if (database != null) {
@@ -10006,7 +10415,7 @@ public class MessagesStorage extends BaseController {
                     if (message.local_id != 0) {
                         messageId = message.local_id;
                     }
-
+                    MessageObject.normalizeFlags(message);
                     NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
                     message.serializeToStream(data);
 
@@ -10072,7 +10481,7 @@ public class MessagesStorage extends BaseController {
                 LongSparseIntArray newMentionsCounts = new LongSparseIntArray();
                 LongSparseIntArray mentionCounts = new LongSparseIntArray();
                 SparseArray<LongSparseIntArray> mediaCounts = null;
-                LongSparseArray<TLRPC.Message> botKeyboards = new LongSparseArray<>();
+                HashMap<TopicKey, TLRPC.Message> botKeyboards = new HashMap<>();
 
                 LongSparseArray<ArrayList<Integer>> dialogMessagesMediaIdsMap = null;
                 LongSparseArray<SparseIntArray> dialogsMediaTypesChange = null;
@@ -10094,8 +10503,8 @@ public class MessagesStorage extends BaseController {
                 HashMap<TopicKey, ArrayList<Integer>> messagesMediaIdsMapTopics = new HashMap<>();
                 ArrayList<TLRPC.Message> createNewTopics = null;
 
-                state_messages = database.executeFast("REPLACE INTO messages_v2 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, ?, ?)");
-                state_messages_topic = database.executeFast("REPLACE INTO messages_topics VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, ?)");
+                state_messages = database.executeFast("REPLACE INTO messages_v2 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)");
+                state_messages_topic = database.executeFast("REPLACE INTO messages_topics VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)");
                 state_media = null;
                 state_randoms = database.executeFast("REPLACE INTO randoms_v2 VALUES(?, ?, ?)");
                 state_download = database.executeFast("REPLACE INTO download_queue VALUES(?, ?, ?, ?, ?)");
@@ -10246,15 +10655,20 @@ public class MessagesStorage extends BaseController {
                         }
                     }
                     if (isValidKeyboardToSave(message)) {
-                        TLRPC.Message oldMessage = botKeyboards.get(message.dialog_id);
+                        TopicKey topicKey = TopicKey.of(message.dialog_id, topicId);
+                        TLRPC.Message oldMessage = botKeyboards.get(topicKey);
                         if (oldMessage == null || oldMessage.id < message.id) {
-                            botKeyboards.put(message.dialog_id, message);
+                            botKeyboards.put(topicKey, message);
                         }
                     }
                 }
 
-                for (int a = 0; a < botKeyboards.size(); a++) {
-                    getMediaDataController().putBotKeyboard(botKeyboards.keyAt(a), botKeyboards.valueAt(a));
+                if (botKeyboards != null && !botKeyboards.isEmpty()) {
+                    Iterator<TopicKey> iterator = botKeyboards.keySet().iterator();
+                    while (iterator.hasNext()) {
+                        TopicKey topicKey = iterator.next();
+                        getMediaDataController().putBotKeyboard(topicKey, botKeyboards.get(topicKey));
+                    }
                 }
 
                 if (mediaIdsMap != null) {
@@ -10502,7 +10916,7 @@ public class MessagesStorage extends BaseController {
                     if (message.local_id != 0) {
                         messageId = message.local_id;
                     }
-
+                    MessageObject.normalizeFlags(message);
                     NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
                     message.serializeToStream(data);
 
@@ -10574,6 +10988,14 @@ public class MessagesStorage extends BaseController {
                         } else {
                             statement.bindInteger(pointer++, getMessageMediaType(message));
                         }
+                        NativeByteBuffer storyData = null;
+                        if (message.replyStory != null) {
+                            storyData = new NativeByteBuffer(message.replyStory.getObjectSize());
+                            message.replyStory.serializeToStream(storyData);
+                            statement.bindByteBuffer(pointer++, storyData);
+                        } else {
+                            statement.bindNull(pointer++);
+                        }
                         int flags = 0;
                         if (message.stickerVerified == 0) {
                             flags |= 1;
@@ -10610,6 +11032,11 @@ public class MessagesStorage extends BaseController {
                                 statement.bindNull(pointer++);
                             }
                         }
+                        if (message.reply_to != null) {
+                            statement.bindInteger(pointer++, message.reply_to.story_id);
+                        } else {
+                            statement.bindInteger(pointer++, 0);
+                        }
                         statement.step();
 
                         if (repliesData != null) {
@@ -10617,6 +11044,9 @@ public class MessagesStorage extends BaseController {
                         }
                         if (customParams != null) {
                             customParams.reuse();
+                        }
+                        if (storyData != null) {
+                            storyData.reuse();
                         }
                     }
 
@@ -11077,7 +11507,7 @@ public class MessagesStorage extends BaseController {
                 updateWidgets(dids);
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (databaseInTransaction) {
                 if (database != null) {
@@ -11199,7 +11629,7 @@ public class MessagesStorage extends BaseController {
                     database.executeFast(String.format(Locale.US, "UPDATE messages_topics SET send_state = 2 WHERE mid = %d AND uid = %d", messageId, MessageObject.getDialogId(message))).stepThis().dispose();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -11215,7 +11645,7 @@ public class MessagesStorage extends BaseController {
                 state.bindInteger(3, seq_out);
                 state.step();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -11236,7 +11666,7 @@ public class MessagesStorage extends BaseController {
                     dialogId = cursor.longValue(1);
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -11256,7 +11686,7 @@ public class MessagesStorage extends BaseController {
                 state.bindInteger(3, oldMessageId);
                 state.step();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -11278,7 +11708,7 @@ public class MessagesStorage extends BaseController {
             try {
                 database.executeFast(String.format(Locale.US, "DELETE FROM randoms_v2 WHERE random_id = %d AND mid = %d AND uid = %d", randomId, _oldId, dialogId)).stepThis().dispose();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
             return null;
         }
@@ -11292,7 +11722,7 @@ public class MessagesStorage extends BaseController {
                     scheduled = 0;
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -11308,7 +11738,7 @@ public class MessagesStorage extends BaseController {
                     scheduled = 1;
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -11341,7 +11771,7 @@ public class MessagesStorage extends BaseController {
                     state2.step();
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -11371,7 +11801,7 @@ public class MessagesStorage extends BaseController {
                         database.executeFast(String.format(Locale.US, "DELETE FROM messages_seq WHERE mid = %d", oldMessageId)).stepThis().dispose();
                         database.executeFast(String.format(Locale.US, "DELETE FROM messages_topics WHERE mid = %d AND uid = %d", oldMessageId, did)).stepThis().dispose();
                     } catch (Exception e2) {
-                        FileLog.e(e2);
+                        checkSQLException(e2);
                     }
                 } finally {
                     if (state != null) {
@@ -11394,7 +11824,7 @@ public class MessagesStorage extends BaseController {
                     try {
                         database.executeFast(String.format(Locale.US, "DELETE FROM media_v4 WHERE mid = %d AND uid = %d", oldMessageId, did)).stepThis().dispose();
                     } catch (Exception e2) {
-                        FileLog.e(e2);
+                        checkSQLException(e2);
                     }
                 } finally {
                     if (state != null) {
@@ -11413,7 +11843,7 @@ public class MessagesStorage extends BaseController {
                     try {
                         database.executeFast(String.format(Locale.US, "DELETE FROM media_topics WHERE mid = %d AND uid = %d", oldMessageId, did)).stepThis().dispose();
                     } catch (Exception e2) {
-                        FileLog.e(e2);
+                        checkSQLException(e2);
                     }
                 } finally {
                     if (state != null) {
@@ -11428,7 +11858,7 @@ public class MessagesStorage extends BaseController {
                     state.bindInteger(2, oldMessageId);
                     state.step();
                 } catch (Exception e) {
-                    FileLog.e(e);
+                    checkSQLException(e);
                 } finally {
                     if (state != null) {
                         state.dispose();
@@ -11445,7 +11875,7 @@ public class MessagesStorage extends BaseController {
                     try {
                         database.executeFast(String.format(Locale.US, "DELETE FROM scheduled_messages_v2 WHERE mid = %d AND uid = %d", oldMessageId, did)).stepThis().dispose();
                     } catch (Exception e2) {
-                        FileLog.e(e2);
+                        checkSQLException(e2);
                     }
                 } finally {
                     if (state != null) {
@@ -11533,8 +11963,7 @@ public class MessagesStorage extends BaseController {
                 }
             }
         } catch (Exception e) {
-            FileLog.e(e);
-            checkMalformed(e);
+            checkSQLException(e);
         } finally {
             if (database != null) {
                 database.commitTransaction();
@@ -11595,7 +12024,7 @@ public class MessagesStorage extends BaseController {
                 }
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (state != null) {
                 state.dispose();
@@ -11624,7 +12053,7 @@ public class MessagesStorage extends BaseController {
                 cursor = null;
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (cursor != null) {
                 cursor.dispose();
@@ -11658,7 +12087,7 @@ public class MessagesStorage extends BaseController {
                         markMessagesContentAsReadInternal(sparseArray.keyAt(a), sparseArray.valueAt(a), date);
                     }
                 } catch (Exception e) {
-                    FileLog.e(e);
+                    checkSQLException(e);
                 } finally {
                     if (cursor != null) {
                         cursor.dispose();
@@ -11710,7 +12139,7 @@ public class MessagesStorage extends BaseController {
                     }
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -11723,7 +12152,7 @@ public class MessagesStorage extends BaseController {
         try {
             database.executeFast(String.format(Locale.US, "DELETE FROM unread_push_messages WHERE uid = %d AND mid IN(%s)", dialogId, TextUtils.join(",", messages))).stepThis().dispose();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
     }
 
@@ -11741,7 +12170,7 @@ public class MessagesStorage extends BaseController {
             cursor = null;
             AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.scheduledMessagesUpdated, did, count));
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (cursor != null) {
                 cursor.dispose();
@@ -11768,7 +12197,7 @@ public class MessagesStorage extends BaseController {
                         }
                     }
                 } catch (Exception e) {
-                    FileLog.e(e);
+                    checkSQLException(e);
                 }
                 cursor.dispose();
                 cursor = null;
@@ -11835,7 +12264,7 @@ public class MessagesStorage extends BaseController {
                         }
                     }
                 } catch (Exception e) {
-                    FileLog.e(e);
+                    checkSQLException(e);
                 }
                 cursor.dispose();
                 cursor = null;
@@ -11886,7 +12315,7 @@ public class MessagesStorage extends BaseController {
                             }
                         }
                     } catch (Exception e) {
-                        FileLog.e(e);
+                        checkSQLException(e);
                     }
                     cursor.dispose();
                     cursor = null;
@@ -12054,6 +12483,7 @@ public class MessagesStorage extends BaseController {
                     database.executeFast(String.format(Locale.US, "DELETE FROM messages_topics WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
                     database.executeFast(String.format(Locale.US, "DELETE FROM polls_v2 WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
                     database.executeFast(String.format(Locale.US, "DELETE FROM bot_keyboard WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
+                    database.executeFast(String.format(Locale.US, "DELETE FROM bot_keyboard_topics WHERE mid IN(%s) AND uid = %d", ids, did)).stepThis().dispose();
                     if (unknownMessages.isEmpty()) {
                         cursor = database.queryFinalized(String.format(Locale.US, "SELECT uid, type FROM media_v4 WHERE mid IN(%s) AND uid = %d", ids, did));
                         SparseArray<LongSparseArray<Integer>> mediaCounts = null;
@@ -12188,7 +12618,7 @@ public class MessagesStorage extends BaseController {
                         database.executeFast(String.format(Locale.US, "UPDATE media_counts_topics SET old = 1 WHERE uid = %d", dialogId)).stepThis().dispose();
                     }
                 }
-                getMediaDataController().clearBotKeyboard(0, messages);
+                getMediaDataController().clearBotKeyboard(null, messages);
 
                 if (dialogsToUpdate.size() != 0) {
                     resetAllUnreadCounters(false);
@@ -12208,7 +12638,7 @@ public class MessagesStorage extends BaseController {
             }
             return dialogsIds;
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (database != null) {
                 database.commitTransaction();
@@ -12422,7 +12852,7 @@ public class MessagesStorage extends BaseController {
                 getMessagesController().processDialogsUpdate(dialogs, encryptedChats, true);
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (database != null) {
                 database.commitTransaction();
@@ -12501,7 +12931,7 @@ public class MessagesStorage extends BaseController {
                     }
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
             cursor.dispose();
             cursor = null;
@@ -12569,7 +12999,7 @@ public class MessagesStorage extends BaseController {
             updateWidgets(dialogsIds);
             return dialogsIds;
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (cursor != null) {
                 cursor.dispose();
@@ -12798,7 +13228,7 @@ public class MessagesStorage extends BaseController {
                                     database.executeFast(String.format(Locale.US, "UPDATE media_holes_v2 SET end = %d WHERE uid = %d AND type = %d AND start = %d AND end = %d", minId, did, hole.type, hole.start, hole.end)).stepThis().dispose();
                                 }
                             } catch (Exception e) {
-                                FileLog.e(e, false);
+                                checkSQLException(e, false);
                             }
                         }
                     } else if (minId <= hole.start + 1) {
@@ -12810,7 +13240,7 @@ public class MessagesStorage extends BaseController {
                                     database.executeFast(String.format(Locale.US, "UPDATE media_holes_v2 SET start = %d WHERE uid = %d AND type = %d AND start = %d AND end = %d", maxId, did, hole.type, hole.start, hole.end)).stepThis().dispose();
                                 }
                             } catch (Exception e) {
-                                FileLog.e(e, false);
+                                checkSQLException(e, false);
                             }
                         }
                     } else {
@@ -12843,7 +13273,7 @@ public class MessagesStorage extends BaseController {
                 }
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (state != null) {
                 state.dispose();
@@ -12891,24 +13321,28 @@ public class MessagesStorage extends BaseController {
                         if (hole.end != minId) {
                             try {
                                 if (thread_message_id != 0) {
-                                    database.executeFast(String.format(Locale.US, "UPDATE " + table + " SET end = %d WHERE uid = %d AND topic_id = %d AND start = %d AND end = %d", minId, did, thread_message_id, hole.start, hole.end)).stepThis().dispose();
+                                    database.executeFast(String.format(Locale.US, "DELETE FROM " + table + " WHERE uid = %d AND topic_id = %d AND start = %d AND end = %d", did, thread_message_id, hole.start, hole.end)).stepThis().dispose();
+                                    database.executeFast(String.format(Locale.US, "REPLACE INTO " + table + " VALUES(%d, %d, %d, %d)", did, thread_message_id, hole.start, minId)).stepThis().dispose();
                                 } else {
-                                    database.executeFast(String.format(Locale.US, "UPDATE " + table + " SET end = %d WHERE uid = %d AND start = %d AND end = %d", minId, did, hole.start, hole.end)).stepThis().dispose();
+                                    database.executeFast(String.format(Locale.US, "DELETE FROM " + table + " WHERE uid = %d AND start = %d AND end = %d", did, hole.start, hole.end)).stepThis().dispose();
+                                    database.executeFast(String.format(Locale.US, "REPLACE INTO " + table + " VALUES(%d, %d, %d)", did, hole.start, minId)).stepThis().dispose();
                                 }
                             } catch (Exception e) {
-                                FileLog.e(e, false);
+                                checkSQLException(e, false);
                             }
                         }
                     } else if (minId <= hole.start + 1) {
                         if (hole.start != maxId) {
                             try {
                                 if (thread_message_id != 0) {
-                                    database.executeFast(String.format(Locale.US, "UPDATE " + table + " SET start = %d WHERE uid = %d AND topic_id = %d AND start = %d AND end = %d", maxId, did, thread_message_id, hole.start, hole.end)).stepThis().dispose();
+                                    database.executeFast(String.format(Locale.US, "DELETE FROM " + table + " WHERE uid = %d AND topic_id = %d AND start = %d AND end = %d", did, thread_message_id, hole.start, hole.end)).stepThis().dispose();
+                                    database.executeFast(String.format(Locale.US, "REPLACE INTO " + table + " VALUES(%d, %d, %d, %d)", did, thread_message_id, maxId, hole.end)).stepThis().dispose();
                                 } else {
-                                    database.executeFast(String.format(Locale.US, "UPDATE " + table + " SET start = %d WHERE uid = %d AND start = %d AND end = %d", maxId, did, hole.start, hole.end)).stepThis().dispose();
+                                    database.executeFast(String.format(Locale.US, "DELETE FROM " + table + " WHERE uid = %d AND start = %d AND end = %d", did, hole.start, hole.end)).stepThis().dispose();
+                                    database.executeFast(String.format(Locale.US, "REPLACE INTO " + table + " VALUES(%d, %d, %d)", did, maxId, hole.end)).stepThis().dispose();
                                 }
                             } catch (Exception e) {
-                                FileLog.e(e, false);
+                                checkSQLException(e, false);
                             }
                         }
                     } else {
@@ -12919,6 +13353,7 @@ public class MessagesStorage extends BaseController {
                             database.executeFast(String.format(Locale.US, "DELETE FROM " + table + " WHERE uid = %d AND start = %d AND end = %d", did, hole.start, hole.end)).stepThis().dispose();
                             state = database.executeFast("REPLACE INTO " + table + " VALUES(?, ?, ?)");
                         }
+
                         int pointer = 1;
                         state.requery();
                         state.bindLong(pointer++, did);
@@ -12943,7 +13378,7 @@ public class MessagesStorage extends BaseController {
                 }
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (state != null) {
                 state.dispose();
@@ -12968,12 +13403,13 @@ public class MessagesStorage extends BaseController {
                 try {
                     cursor = database.queryFinalized(String.format(Locale.US, "SELECT uid, read_state, custom_params FROM messages_v2 WHERE mid = %d AND uid = %d LIMIT 1", message.id, MessageObject.getDialogId(message)));
                     if (!cursor.next()) {
+                        cursor.dispose();
                         return;
                     }
                     readState = cursor.intValue(1);
                     customParams = cursor.byteBufferValue(2);
                 } catch (Exception e) {
-                    FileLog.e(e);
+                    checkSQLException(e);
                 } finally {
                     if (cursor != null) {
                         cursor.dispose();
@@ -12987,6 +13423,7 @@ public class MessagesStorage extends BaseController {
                 }
 
                 fixUnsupportedMedia(message);
+                MessageObject.normalizeFlags(message);
                 NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
                 message.serializeToStream(data);
 
@@ -12997,9 +13434,9 @@ public class MessagesStorage extends BaseController {
                         continue;
                     }
                     if (isTopic) {
-                        state = database.executeFast("REPLACE INTO messages_topics VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, ?)");
+                        state = database.executeFast("REPLACE INTO messages_topics VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)");
                     } else {
-                        state = database.executeFast("REPLACE INTO messages_v2 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, ?, ?)");
+                        state = database.executeFast("REPLACE INTO messages_v2 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)");
                     }
                     state.requery();
 
@@ -13019,6 +13456,14 @@ public class MessagesStorage extends BaseController {
                         state.bindInteger(pointer++, message.views);
                     } else {
                         state.bindInteger(pointer++, getMessageMediaType(message));
+                    }
+                    NativeByteBuffer storyData = null;
+                    if (message.replyStory != null) {
+                        storyData = new NativeByteBuffer(message.replyStory.getObjectSize());
+                        message.replyStory.serializeToStream(storyData);
+                        state.bindByteBuffer(pointer++, storyData);
+                    } else {
+                        state.bindNull(pointer++);
                     }
                     int flags = 0;
                     if (message.stickerVerified == 0) {
@@ -13055,11 +13500,19 @@ public class MessagesStorage extends BaseController {
                             state.bindNull(pointer++);
                         }
                     }
+                    if (message.reply_to != null) {
+                        state.bindInteger(pointer++, message.reply_to.story_id);
+                    } else {
+                        state.bindInteger(pointer++, 0);
+                    }
                     state.step();
                     state.dispose();
                     state = null;
                     if (repliesData != null) {
                         repliesData.reuse();
+                    }
+                    if (storyData != null) {
+                        storyData.reuse();
                     }
                 }
 
@@ -13114,7 +13567,7 @@ public class MessagesStorage extends BaseController {
                     AndroidUtilities.runOnUIThread(() -> getNotificationCenter().postNotificationName(NotificationCenter.replaceMessagesObjects, messageObject.getDialogId(), arrayList));
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -13153,6 +13606,7 @@ public class MessagesStorage extends BaseController {
                         }
 
                         fixUnsupportedMedia(message);
+                        MessageObject.normalizeFlags(message);
                         state_messages.requery();
                         NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
                         message.serializeToStream(data);
@@ -13214,15 +13668,15 @@ public class MessagesStorage extends BaseController {
                     Integer lastMessageId = null;
                     Long lastMessageGroupId = null;
 
-                    state_messages_topics = database.executeFast("REPLACE INTO messages_topics VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, ?)");
-                    state_messages = database.executeFast("REPLACE INTO messages_v2 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, ?, ?)");
+                    state_messages_topics = database.executeFast("REPLACE INTO messages_topics VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)");
+                    state_messages = database.executeFast("REPLACE INTO messages_v2 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)");
                     state_media = database.executeFast("REPLACE INTO media_v4 VALUES(?, ?, ?, ?, ?)");
                     state_media_topics = database.executeFast("REPLACE INTO media_topics VALUES(?, ?, ?, ?, ?, ?)");
                     state_polls = null;
                     state_webpage = null;
                     state_tasks = null;
                     int minDeleteTime = Integer.MAX_VALUE;
-                    TLRPC.Message botKeyboard = null;
+                    HashMap<TopicKey, TLRPC.Message> botKeyboards = null;
                     long channelId = 0;
                     for (int a = 0; a < count; a++) {
                         TLRPC.Message message = messages.messages.get(a);
@@ -13353,6 +13807,7 @@ public class MessagesStorage extends BaseController {
                         }
 
                         fixUnsupportedMedia(message);
+                        MessageObject.normalizeFlags(message);
                         NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
                         message.serializeToStream(data);
 
@@ -13385,6 +13840,14 @@ public class MessagesStorage extends BaseController {
                                 currentState.bindInteger(pointer++, message.views);
                             } else {
                                 currentState.bindInteger(pointer++, getMessageMediaType(message));
+                            }
+                            NativeByteBuffer storyData = null;
+                            if (message.replyStory != null) {
+                                storyData = new NativeByteBuffer(message.replyStory.getObjectSize());
+                                message.replyStory.serializeToStream(storyData);
+                                currentState.bindByteBuffer(pointer++, storyData);
+                            } else {
+                                currentState.bindNull(pointer++);
                             }
                             int flags = 0;
                             if (message.stickerVerified == 0) {
@@ -13422,6 +13885,11 @@ public class MessagesStorage extends BaseController {
                                     currentState.bindNull(pointer++);
                                 }
                             }
+                            if (message.reply_to != null) {
+                                currentState.bindInteger(pointer++, message.reply_to.story_id);
+                            } else {
+                                currentState.bindInteger(pointer++, 0);
+                            }
                             currentState.step();
 
                             if (repliesData != null) {
@@ -13429,6 +13897,9 @@ public class MessagesStorage extends BaseController {
                             }
                             if (customParams != null) {
                                 customParams.reuse();
+                            }
+                            if (storyData != null) {
+                                storyData.reuse();
                             }
                         }
 
@@ -13446,7 +13917,7 @@ public class MessagesStorage extends BaseController {
                                     database.executeFast(String.format(Locale.US, "DELETE FROM media_v4 WHERE mid = %d AND uid = %d", message.id, dialogId)).stepThis().dispose();
                                     database.executeFast("DELETE FROM media_counts_v2 WHERE uid = " + dialogId).stepThis().dispose();
                                 } catch (Exception e2) {
-                                    FileLog.e(e2);
+                                    checkSQLException(e2);
                                 }
                             }
                         }
@@ -13500,8 +13971,13 @@ public class MessagesStorage extends BaseController {
                         }
 
                         if (load_type == 0 && isValidKeyboardToSave(message)) {
-                            if (botKeyboard == null || botKeyboard.id < message.id) {
-                                botKeyboard = message;
+                            TopicKey topicKey = TopicKey.of(dialogId, MessageObject.getTopicId(message, isForum(dialogId)));
+                            TLRPC.Message currentBotKeyboard = botKeyboards == null ? null : botKeyboards.get(topicKey);
+                            if (currentBotKeyboard == null || currentBotKeyboard.id < message.id) {
+                                if (botKeyboards == null) {
+                                    botKeyboards = new HashMap<>();
+                                }
+                                botKeyboards.put(topicKey, message);
                             }
                         }
                     }
@@ -13524,8 +14000,12 @@ public class MessagesStorage extends BaseController {
                         state_polls.dispose();
                         state_polls = null;
                     }
-                    if (botKeyboard != null) {
-                        getMediaDataController().putBotKeyboard(dialogId, botKeyboard);
+                    if (botKeyboards != null) {
+                        Iterator<TopicKey> iterator = botKeyboards.keySet().iterator();
+                        while (iterator.hasNext()) {
+                            TopicKey topicKey = iterator.next();
+                            getMediaDataController().putBotKeyboard(topicKey, botKeyboards.get(topicKey));
+                        }
                     }
                     deleteFromDownloadQueue(idsToDelete, false);
                     AndroidUtilities.runOnUIThread(() -> getFileLoader().cancelLoadFiles(namesToDelete));
@@ -13553,7 +14033,7 @@ public class MessagesStorage extends BaseController {
                     }
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -13657,7 +14137,16 @@ public class MessagesStorage extends BaseController {
             if (message.media instanceof TLRPC.TL_messageMediaPoll) {
                 TLRPC.TL_messageMediaPoll messageMediaPoll = (TLRPC.TL_messageMediaPoll) message.media;
                 if (!messageMediaPoll.results.recent_voters.isEmpty()) {
-                    usersToLoad.addAll(messageMediaPoll.results.recent_voters);
+                    for (int i = 0; i < messageMediaPoll.results.recent_voters.size(); i++) {
+                        TLRPC.Peer peer = messageMediaPoll.results.recent_voters.get(i);
+                        if (peer.user_id != 0) {
+                            usersToLoad.add(peer.user_id);
+                        } else if (peer.chat_id != 0) {
+                            chatsToLoad.add(-peer.chat_id);
+                        } else if (peer.channel_id != 0) {
+                            chatsToLoad.add(-peer.channel_id);
+                        }
+                    }
                 }
             }
         }
@@ -13876,7 +14365,7 @@ public class MessagesStorage extends BaseController {
                                         }
                                     }
                                 } catch (Exception e) {
-                                    FileLog.e(e);
+                                    checkSQLException(e);
                                 }
                             } else {
                                 data.reuse();
@@ -13972,7 +14461,7 @@ public class MessagesStorage extends BaseController {
                                             }
                                         }
                                     } catch (Exception e) {
-                                        FileLog.e(e);
+                                        checkSQLException(e);
                                     }
                                 } else {
                                     data.reuse();
@@ -14061,9 +14550,8 @@ public class MessagesStorage extends BaseController {
                 dialogs.users.clear();
                 dialogs.chats.clear();
                 encryptedChats.clear();
-                FileLog.e(e);
+                checkSQLException(e);
                 getMessagesController().processLoadedDialogs(dialogs, encryptedChats, null, folderId, 0, 100, 1, true, false, true);
-                checkMalformed(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -14120,7 +14608,7 @@ public class MessagesStorage extends BaseController {
                 state = null;
                 data.reuse();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -14154,7 +14642,7 @@ public class MessagesStorage extends BaseController {
             }
 
             if (!dialogs.dialogs.isEmpty()) {
-                state_messages = database.executeFast("REPLACE INTO messages_v2 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, NULL, ?)");
+                state_messages = database.executeFast("REPLACE INTO messages_v2 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 0, NULL, ?, ?)");
                 state_dialogs = database.executeFast("REPLACE INTO dialogs VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
                 state_media = database.executeFast("REPLACE INTO media_v4 VALUES(?, ?, ?, ?, ?)");
                 state_settings = database.executeFast("REPLACE INTO dialog_settings VALUES(?, ?)");
@@ -14207,10 +14695,12 @@ public class MessagesStorage extends BaseController {
                         messageDate = Math.max(message.date, messageDate);
 
                         if (isValidKeyboardToSave(message)) {
-                            getMediaDataController().putBotKeyboard(dialog.id, message);
+                            TopicKey topicKey = TopicKey.of(dialog.id, MessageObject.getTopicId(message, isForum(dialog.id)));
+                            getMediaDataController().putBotKeyboard(topicKey, message);
                         }
 
                         fixUnsupportedMedia(message);
+                        MessageObject.normalizeFlags(message);
                         NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
                         message.serializeToStream(data);
 
@@ -14251,6 +14741,11 @@ public class MessagesStorage extends BaseController {
                             state_messages.bindLong(16, message.grouped_id);
                         } else {
                             state_messages.bindNull(16);
+                        }
+                        if (message.reply_to != null) {
+                            state_messages.bindInteger(17, message.reply_to.story_id);
+                        } else {
+                            state_messages.bindInteger(17, 0);
                         }
                         state_messages.step();
 
@@ -14375,7 +14870,7 @@ public class MessagesStorage extends BaseController {
             database.commitTransaction();
             resetAllUnreadCounters(false);
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (database != null) {
                 database.commitTransaction();
@@ -14431,7 +14926,7 @@ public class MessagesStorage extends BaseController {
                 }
                 AndroidUtilities.runOnUIThread(() -> callback.run(folderId));
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -14449,12 +14944,16 @@ public class MessagesStorage extends BaseController {
             try {
                 database.beginTransaction();
                 state = database.executeFast("UPDATE dialogs SET folder_id = ?, pinned = ? WHERE did = ?");
+                boolean hasFolderId1 = false;
                 if (peers != null) {
                     for (int a = 0, N = peers.size(); a < N; a++) {
                         TLRPC.TL_folderPeer folderPeer = peers.get(a);
                         long did = DialogObject.getPeerDialogId(folderPeer.peer);
                         state.requery();
                         state.bindInteger(1, folderPeer.folder_id);
+                        if (folderPeer.folder_id == 1) {
+                            hasFolderId1 = true;
+                        }
                         state.bindInteger(2, 0);
                         state.bindLong(3, did);
                         state.step();
@@ -14466,6 +14965,9 @@ public class MessagesStorage extends BaseController {
                         long did = DialogObject.getPeerDialogId(folderPeer.peer);
                         state.requery();
                         state.bindInteger(1, folderPeer.folder_id);
+                        if (folderPeer.folder_id == 1) {
+                            hasFolderId1 = true;
+                        }
                         state.bindInteger(2, 0);
                         state.bindLong(3, did);
                         state.step();
@@ -14474,6 +14976,9 @@ public class MessagesStorage extends BaseController {
                 } else {
                     state.requery();
                     state.bindInteger(1, folderId);
+                    if (folderId == 1) {
+                        hasFolderId1 = true;
+                    }
                     state.bindInteger(2, 0);
                     state.bindLong(3, dialogId);
                     state.step();
@@ -14481,10 +14986,12 @@ public class MessagesStorage extends BaseController {
                 state.dispose();
                 state = null;
                 database.commitTransaction();
-                checkIfFolderEmptyInternal(1);
+                if (!hasFolderId1) {
+                    checkIfFolderEmptyInternal(1);
+                }
                 resetAllUnreadCounters(false);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (database != null) {
                     database.commitTransaction();
@@ -14520,7 +15027,7 @@ public class MessagesStorage extends BaseController {
                 database.executeFast("DELETE FROM dialogs WHERE did = " + DialogObject.makeFolderDialogId(folderId)).stepThis().dispose();
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (cursor != null) {
                 cursor.dispose();
@@ -14561,7 +15068,7 @@ public class MessagesStorage extends BaseController {
                     state = null;
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -14585,7 +15092,7 @@ public class MessagesStorage extends BaseController {
                         flags = cursor.intValue(0);
                     }
                 } catch (Exception e) {
-                    FileLog.e(e);
+                    checkSQLException(e);
                 } finally {
                     if (cursor != null) {
                         cursor.dispose();
@@ -14605,7 +15112,7 @@ public class MessagesStorage extends BaseController {
                 state.dispose();
                 resetAllUnreadCounters(false);
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -14648,7 +15155,7 @@ public class MessagesStorage extends BaseController {
                 state.dispose();
                 state = null;
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -14671,7 +15178,7 @@ public class MessagesStorage extends BaseController {
                 state.dispose();
                 state = null;
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (state != null) {
                     state.dispose();
@@ -14689,7 +15196,7 @@ public class MessagesStorage extends BaseController {
             try {
                 loadUnreadMessages();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
     }
@@ -14704,7 +15211,7 @@ public class MessagesStorage extends BaseController {
                     max[0] = cursor.intValue(0);
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -14738,7 +15245,7 @@ public class MessagesStorage extends BaseController {
                     }
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -14749,7 +15256,7 @@ public class MessagesStorage extends BaseController {
         try {
             countDownLatch.await();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return max[0];
     }
@@ -14765,7 +15272,7 @@ public class MessagesStorage extends BaseController {
                     pts[0] = cursor.intValue(0);
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             } finally {
                 if (cursor != null) {
                     cursor.dispose();
@@ -14774,13 +15281,13 @@ public class MessagesStorage extends BaseController {
             try {
                 countDownLatch.countDown();
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
         });
         try {
             countDownLatch.await();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return pts[0];
     }
@@ -14795,7 +15302,7 @@ public class MessagesStorage extends BaseController {
         try {
             countDownLatch.await();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return user[0];
     }
@@ -14810,7 +15317,7 @@ public class MessagesStorage extends BaseController {
         try {
             countDownLatch.await();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return chat[0];
     }
@@ -14824,7 +15331,7 @@ public class MessagesStorage extends BaseController {
                 user = users.get(0);
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return user;
     }
@@ -14835,7 +15342,7 @@ public class MessagesStorage extends BaseController {
             getUsersInternal(TextUtils.join(",", uids), users);
         } catch (Exception e) {
             users.clear();
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return users;
     }
@@ -14849,7 +15356,7 @@ public class MessagesStorage extends BaseController {
                 chat = chats.get(0);
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return chat;
     }
@@ -14863,7 +15370,7 @@ public class MessagesStorage extends BaseController {
                 chat = encryptedChats.get(0);
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         }
         return chat;
     }
@@ -15204,7 +15711,7 @@ public class MessagesStorage extends BaseController {
                 cursor = null;
             }
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (cursor != null) {
                 cursor.dispose();
@@ -15223,11 +15730,11 @@ public class MessagesStorage extends BaseController {
                     messageIds.add(mid);
                 }
             } catch (Exception e) {
-                FileLog.e(e);
+                checkSQLException(e);
             }
             cursor.dispose();
         } catch (Exception e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (cursor != null) {
                 cursor.dispose();
@@ -15364,6 +15871,7 @@ public class MessagesStorage extends BaseController {
                         state = getMessagesStorage().getDatabase().executeFast(String.format(Locale.US, "UPDATE messages_topics SET data = ? WHERE uid = %d AND mid = %d", dialogId, messageId));
                     }
                     try {
+                        MessageObject.normalizeFlags(message);
                         NativeByteBuffer data = new NativeByteBuffer(message.getObjectSize());
                         message.serializeToStream(data);
                         state.bindByteBuffer(1, data);
@@ -15376,7 +15884,7 @@ public class MessagesStorage extends BaseController {
                 }
             }
         } catch (SQLiteException e) {
-            FileLog.e(e);
+            checkSQLException(e);
         } finally {
             if (state != null) {
                 state.dispose();
@@ -15490,6 +15998,14 @@ public class MessagesStorage extends BaseController {
         @Override
         public int hashCode() {
             return Objects.hash(dialogId, topicId);
+        }
+
+        @Override
+        public String toString() {
+            return "TopicKey{" +
+                    "dialogId=" + dialogId +
+                    ", topicId=" + topicId +
+                    '}';
         }
     }
 }

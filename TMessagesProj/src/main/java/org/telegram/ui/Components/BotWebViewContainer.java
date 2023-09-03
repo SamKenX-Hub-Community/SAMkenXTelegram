@@ -20,7 +20,9 @@ import android.graphics.PorterDuffColorFilter;
 import android.graphics.drawable.Drawable;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Message;
 import android.text.TextUtils;
+import android.util.Log;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -31,6 +33,7 @@ import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -267,6 +270,18 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
                 }
                 return super.onTouchEvent(event);
             }
+
+            @Override
+            protected void onAttachedToWindow() {
+                AndroidUtilities.checkAndroidTheme(getContext(), true);
+                super.onAttachedToWindow();
+            }
+
+            @Override
+            protected void onDetachedFromWindow() {
+                AndroidUtilities.checkAndroidTheme(getContext(), false);
+                super.onDetachedFromWindow();
+            }
         };
         webView.setBackgroundColor(getColor(Theme.key_windowBackgroundWhite));
         WebSettings settings = webView.getSettings();
@@ -274,6 +289,7 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
         settings.setGeolocationEnabled(true);
         settings.setDomStorageEnabled(true);
         settings.setDatabaseEnabled(true);
+        settings.setSupportMultipleWindows(true);
 
         // Hackfix text on some Xiaomi devices
         settings.setTextSize(WebSettings.TextSize.NORMAL);
@@ -288,21 +304,14 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                Uri uriOrig = Uri.parse(mUrl);
                 Uri uriNew = Uri.parse(url);
-
-                boolean override;
-                if (isPageLoaded && (!Objects.equals(uriOrig.getHost(), uriNew.getHost()) || !Objects.equals(uriOrig.getPath(), uriNew.getPath()))) {
-                    override = true;
-
+                if (Browser.isInternalUri(uriNew, null)) {
                     if (WHITELISTED_SCHEMES.contains(uriNew.getScheme())) {
                         onOpenUri(uriNew);
                     }
-                } else {
-                    override = false;
+                    return true;
                 }
-
-                return override;
+                return false;
             }
 
             @Override
@@ -312,6 +321,22 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
         });
         webView.setWebChromeClient(new WebChromeClient() {
             private Dialog lastPermissionsDialog;
+
+            @Override
+            public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
+                WebView newWebView = new WebView(view.getContext());
+                newWebView.setWebViewClient(new WebViewClient() {
+                    @Override
+                    public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                        onOpenUri(Uri.parse(url));
+                        return true;
+                    }
+                });
+                WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
+                transport.setWebView(newWebView);
+                resultMsg.sendToTarget();
+                return true;
+            }
 
             @Override
             public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
@@ -489,17 +514,8 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
             } else {
                 Browser.openUrl(getContext(), uri, true, tryInstantView);
             }
-        } else if (suppressPopup) {
-            Browser.openUrl(getContext(), uri, true, tryInstantView);
         } else {
-            isRequestingPageOpen = true;
-            new AlertDialog.Builder(getContext(), resourcesProvider)
-                    .setTitle(LocaleController.getString(R.string.OpenUrlTitle))
-                    .setMessage(LocaleController.formatString(R.string.OpenUrlAlert2, uri.toString()))
-                    .setPositiveButton(LocaleController.getString(R.string.Open), (dialog, which) -> Browser.openUrl(getContext(), uri, true, tryInstantView))
-                    .setNegativeButton(LocaleController.getString(R.string.Cancel), null)
-                    .setOnDismissListener(dialog -> isRequestingPageOpen = false)
-                    .show();
+            Browser.openUrl(getContext(), uri, true, tryInstantView);
         }
     }
 
@@ -939,6 +955,21 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
                 delegate.onCloseRequested(null);
                 break;
             }
+            case "web_app_switch_inline_query": {
+                try {
+                    JSONObject jsonObject = new JSONObject(eventData);
+                    List<String> types = new ArrayList<>();
+                    JSONArray arr = jsonObject.getJSONArray("chat_types");
+                    for (int i = 0; i < arr.length(); i++) {
+                        types.add(arr.getString(i));
+                    }
+
+                    delegate.onWebAppSwitchInlineQuery(botUser, jsonObject.getString("query"), types);
+                } catch (JSONException e) {
+                    FileLog.e(e);
+                }
+                break;
+            }
             case "web_app_read_text_from_clipboard": {
                 try {
                     JSONObject jsonObject = new JSONObject(eventData);
@@ -1121,21 +1152,21 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
                     currentDialog = builder.show();
                     if (buttonsList.size() >= 1) {
                         PopupButton btn = buttonsList.get(0);
-                        if (btn.textColorKey != null) {
+                        if (btn.textColorKey >= 0) {
                             TextView textView = (TextView) currentDialog.getButton(AlertDialog.BUTTON_POSITIVE);
                             textView.setTextColor(getColor(btn.textColorKey));
                         }
                     }
                     if (buttonsList.size() >= 2) {
                         PopupButton btn = buttonsList.get(1);
-                        if (btn.textColorKey != null) {
+                        if (btn.textColorKey >= 0) {
                             TextView textView = (TextView) currentDialog.getButton(AlertDialog.BUTTON_NEGATIVE);
                             textView.setTextColor(getColor(btn.textColorKey));
                         }
                     }
                     if (buttonsList.size() == 3) {
                         PopupButton btn = buttonsList.get(2);
-                        if (btn.textColorKey != null) {
+                        if (btn.textColorKey >= 0) {
                             TextView textView = (TextView) currentDialog.getButton(AlertDialog.BUTTON_NEUTRAL);
                             textView.setTextColor(getColor(btn.textColorKey));
                         }
@@ -1167,7 +1198,7 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
                 try {
                     JSONObject jsonObject = new JSONObject(eventData);
                     String key = jsonObject.getString("color_key");
-                    String themeKey = null;
+                    int themeKey = -1;
                     switch (key) {
                         case "bg_color": {
                             themeKey = Theme.key_windowBackgroundWhite;
@@ -1178,7 +1209,7 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
                             break;
                         }
                     }
-                    if (themeKey != null) {
+                    if (themeKey >= 0) {
                         delegate.onWebAppSetActionBarColor(themeKey);
                     }
                 } catch (JSONException e) {
@@ -1411,15 +1442,14 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
         }
     }
 
-    private int getColor(String colorKey) {
-        Integer color = resourcesProvider != null ? resourcesProvider.getColor(colorKey) : Theme.getColor(colorKey);
-        if (color == null) {
-            color = Theme.getColor(colorKey);
+    private int getColor(int colorKey) {
+        if (resourcesProvider != null) {
+            return resourcesProvider.getColor(colorKey);
         }
-        return color;
+        return Theme.getColor(colorKey);
     }
 
-    private String formatColor(String colorKey) {
+    private String formatColor(int colorKey) {
         int color = getColor(colorKey);
         return "#" + hexFixed(Color.red(color)) + hexFixed(Color.green(color)) + hexFixed(Color.blue(color));
     }
@@ -1475,7 +1505,7 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
          *
          * @param colorKey  Color theme key
          */
-        void onWebAppSetActionBarColor(String colorKey);
+        void onWebAppSetActionBarColor(int colorKey);
 
         /**
          * Called when WebView requests to set background color
@@ -1488,6 +1518,15 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
          * Called when WebView requests to expand viewport
          */
         void onWebAppExpand();
+
+        /**
+         * Called when web apps requests to switch to inline mode picker
+         *
+         * @param botUser Bot user
+         * @param query Inline query
+         * @param chatTypes Chat types
+         */
+        void onWebAppSwitchInlineQuery(TLRPC.User botUser, String query, List<String> chatTypes);
 
         /**
          * Called when web app attempts to open invoice
@@ -1523,8 +1562,7 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
     public final static class PopupButton {
         public String id;
         public String text;
-        @Nullable
-        public String textColorKey;
+        public int textColorKey = -1;
 
         public PopupButton(JSONObject obj) throws JSONException {
             id = obj.getString("id");
@@ -1550,7 +1588,7 @@ public class BotWebViewContainer extends FrameLayout implements NotificationCent
                 }
                 case "destructive": {
                     textRequired = true;
-                    textColorKey = Theme.key_dialogTextRed;
+                    textColorKey = Theme.key_text_RedBold;
                     break;
                 }
             }
